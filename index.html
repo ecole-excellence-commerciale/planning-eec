@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Planning EEC</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Librairies externes -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- Configuration (à éditer avec tes clés Supabase) -->
+  <script src="src/config.js"></script>
+
+  <!-- Couche données (pas de JSX → script normal) -->
+  <script src="src/supabase.js"></script>
+
+  <!-- Modules applicatifs (JSX → type text/babel) -->
+  <script type="text/babel" src="src/utils.js" data-presets="react"></script>
+  <script type="text/babel" src="src/intervenant.js" data-presets="react"></script>
+  <script type="text/babel" src="src/admin.js" data-presets="react"></script>
+  <script type="text/babel" src="src/admin-intervenants.js" data-presets="react"></script>
+  <script type="text/babel" src="src/app.js" data-presets="react"></script>
+</body>
+</html>

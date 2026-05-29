@@ -164,6 +164,19 @@ const PageCalendrier = ({ data }) => {
   const { intervenants, campagne, dispos, niveaux } = data;
   const [filterNiveau, setFilterNiveau] = useState('all');
   const [detail, setDetail] = useState(null); // { date, periode, liste:[] }
+  // Filtre intervenants : Set des IDs sélectionnés. Par défaut tous cochés.
+  const [selectedIntervenants, setSelectedIntervenants] = useState(() => new Set(intervenants.map(i => i.id)));
+  const [showFilterModal, setShowFilterModal] = useState(false);
+
+  // Quand la liste d'intervenants change (nouveaux ajouts), on inclut auto les nouveaux
+  useEffect(() => {
+    setSelectedIntervenants(prev => {
+      let changed = false;
+      const next = new Set(prev);
+      intervenants.forEach(i => { if (!next.has(i.id)) { next.add(i.id); changed = true; } });
+      return changed ? next : prev;
+    });
+  }, [intervenants]);
 
   if (!campagne) {
     return <div className="page-content"><div className="card text-muted">Aucune campagne ouverte.</div></div>;
@@ -172,6 +185,7 @@ const PageCalendrier = ({ data }) => {
   const weeks = useMemo(() => generateWeeks(campagne.date_debut, campagne.date_fin), [campagne]);
 
   // Index : pour une date+periode, qui est dispo ?
+  // On filtre par niveau ET par intervenant sélectionné
   const dispoIndex = useMemo(() => {
     const idx = {};
     const interById = Object.fromEntries(intervenants.map(i => [i.id, i]));
@@ -179,11 +193,12 @@ const PageCalendrier = ({ data }) => {
       const inter = interById[d.intervenant_id];
       if (!inter) return;
       if (filterNiveau !== 'all' && !inter.niveaux.includes(filterNiveau)) return;
+      if (!selectedIntervenants.has(inter.id)) return;
       const key = `${d.date}-${d.periode}`;
       (idx[key] = idx[key] || []).push(inter);
     });
     return idx;
-  }, [dispos, intervenants, filterNiveau]);
+  }, [dispos, intervenants, filterNiveau, selectedIntervenants]);
 
   const countFor = (dateStr, periode) => (dispoIndex[`${dateStr}-${periode}`] || []).length;
 
@@ -218,6 +233,15 @@ const PageCalendrier = ({ data }) => {
             <option value="all">Tous les niveaux</option>
             {niveaux.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
           </select>
+        </div>
+        <div>
+          <label className="label" style={{ marginBottom: 4, fontSize: 10 }}>Intervenants</label>
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowFilterModal(true)} style={{ height: 36 }}>
+            <Icon name="users" size={12} /> {selectedIntervenants.size} / {intervenants.length}
+            {selectedIntervenants.size < intervenants.length && (
+              <span className="chip cyan" style={{ marginLeft: 6, fontSize: 10 }}>Filtré</span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -310,6 +334,60 @@ const PageCalendrier = ({ data }) => {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showFilterModal && (
+        <div className="modal-backdrop" onClick={() => setShowFilterModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-head">
+              <h3>Filtrer les intervenants</h3>
+              <div className="modal-close" onClick={() => setShowFilterModal(false)}><Icon name="x" size={16} /></div>
+            </div>
+            <div className="text-sm text-muted mb-16">
+              Coche les intervenants à inclure dans le calendrier. {selectedIntervenants.size} / {intervenants.length} sélectionné(s).
+            </div>
+            <div className="flex gap-8 mb-16">
+              <button className="btn btn-ghost btn-sm" onClick={() => setSelectedIntervenants(new Set(intervenants.map(i => i.id)))}>
+                Tout cocher
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSelectedIntervenants(new Set())}>
+                Tout décocher
+              </button>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6, padding: '4px 0' }}>
+              {intervenants.length === 0 ? (
+                <div className="text-muted text-sm" style={{ padding: 16, textAlign: 'center' }}>Aucun intervenant.</div>
+              ) : intervenants.map(i => {
+                const checked = selectedIntervenants.has(i.id);
+                return (
+                  <label key={i.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--bg-alt)' }}>
+                    <input type="checkbox" checked={checked}
+                      onChange={(e) => {
+                        setSelectedIntervenants(prev => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(i.id); else next.delete(i.id);
+                          return next;
+                        });
+                      }} />
+                    <div style={{ flex: 1 }}>
+                      <div className="text-sm" style={{ fontWeight: 500 }}>{i.prenom} {i.nom}</div>
+                      <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                        {i.niveaux.map(nid => {
+                          const niv = niveaux.find(x => x.id === nid);
+                          return niv ? <span key={nid} className={'chip ' + niv.couleur} style={{ fontSize: 10 }}>{niv.label}</span> : null;
+                        })}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-primary" onClick={() => setShowFilterModal(false)}>Appliquer</button>
+            </div>
           </div>
         </div>
       )}

@@ -223,16 +223,61 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const [tab, setTab] = useState('dispos');
   const [tauxEdit, setTauxEdit] = useState('');
   const [disposPerso, setDisposPerso] = useState([]);
+  // Édition de l'identité (mode édition + valeurs du formulaire)
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({ prenom: '', nom: '', email: '', telephone: '', ville: '' });
+  // État de la modale de suppression définitive
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
 
   const load = async () => {
     const i = await db.getIntervenant(intervenantId);
     setInter(i);
     setTauxEdit(i.taux_horaire ?? '');
+    setEditForm({
+      prenom: i.prenom || '', nom: i.nom || '',
+      email: i.email || '', telephone: i.telephone || '', ville: i.ville || ''
+    });
     if (campagne) setDisposPerso(await db.getDisposIntervenant(intervenantId, campagne.id));
   };
   useEffect(() => { load(); }, [intervenantId]);
 
   if (!inter) return <div className="page-content"><div className="text-muted">Chargement…</div></div>;
+
+  const saveIdentite = async () => {
+    if (!editForm.prenom.trim() || !editForm.nom.trim()) {
+      toast('Prénom et nom obligatoires', 'error'); return;
+    }
+    await db.updateIntervenant(inter.id, {
+      prenom: editForm.prenom.trim(),
+      nom: editForm.nom.trim(),
+      email: editForm.email.trim() || null,
+      telephone: editForm.telephone.trim() || null,
+      ville: editForm.ville.trim() || null,
+    });
+    toast('Profil mis à jour', 'success');
+    setEditMode(false);
+    load(); onReload();
+  };
+
+  const archiver = async () => {
+    if (!confirm(`Archiver ${inter.prenom} ${inter.nom} ?\n\nL'intervenant disparaîtra de la liste active mais toutes ses données (dispos, notes) sont conservées. Tu pourras le réactiver à tout moment.`)) return;
+    await db.deactivateIntervenant(inter.id);
+    toast('Intervenant archivé', 'success');
+    onReload(); onBack();
+  };
+
+  const reactiver = async () => {
+    await db.reactivateIntervenant(inter.id);
+    toast('Intervenant réactivé', 'success');
+    load(); onReload();
+  };
+
+  const supprimerDefinitivement = async () => {
+    await db.deleteIntervenant(inter.id);
+    toast('Intervenant supprimé définitivement', 'success');
+    onReload(); onBack();
+  };
 
   const saveTaux = async () => {
     await db.updateIntervenant(inter.id, { taux_horaire: tauxEdit ? parseFloat(tauxEdit) : null });
@@ -262,16 +307,46 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
 
   const matieresNotees = matieres.filter(m => m.id in inter.ratings);
   const matieresNonNotees = matieres.filter(m => !(m.id in inter.ratings));
+  const setEd = (k, v) => setEditForm(f => ({ ...f, [k]: v }));
 
   return (
     <div className="page-content">
       <div className="page-header">
-        <div>
+        <div style={{ flex: 1 }}>
           <div className="breadcrumb"><a onClick={onBack} style={{ cursor: 'pointer' }}>Intervenants</a> <span className="sep">›</span> {inter.prenom} {inter.nom}</div>
-          <h1 className="page-title display-dot">{inter.prenom} {inter.nom}</h1>
-          <div className="page-subtitle">{inter.email || 'Pas d’email'} {inter.ville ? '· ' + inter.ville : ''}</div>
+          {!editMode ? (
+            <>
+              <h1 className="page-title display-dot" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {inter.prenom} {inter.nom}
+                {!inter.actif && <span className="chip danger" style={{ fontSize: 11 }}>Archivé</span>}
+                <button className="btn btn-ghost btn-sm" onClick={() => setEditMode(true)} title="Modifier le profil">
+                  <Icon name="edit" size={12} /> Modifier
+                </button>
+              </h1>
+              <div className="page-subtitle">
+                {inter.email || 'Pas d’email'}
+                {inter.telephone ? ' · ' + inter.telephone : ''}
+                {inter.ville ? ' · ' + inter.ville : ''}
+              </div>
+            </>
+          ) : (
+            <div className="card" style={{ marginTop: 8, maxWidth: 720 }}>
+              <div className="card-title">Modifier le profil</div>
+              <div className="grid-2">
+                <div className="field"><div className="label">Prénom *</div><input value={editForm.prenom} onChange={e => setEd('prenom', e.target.value)} /></div>
+                <div className="field"><div className="label">Nom *</div><input value={editForm.nom} onChange={e => setEd('nom', e.target.value)} /></div>
+                <div className="field"><div className="label">Email</div><input type="email" value={editForm.email} onChange={e => setEd('email', e.target.value)} /></div>
+                <div className="field"><div className="label">Téléphone</div><input value={editForm.telephone} onChange={e => setEd('telephone', e.target.value)} /></div>
+                <div className="field"><div className="label">Ville</div><input value={editForm.ville} onChange={e => setEd('ville', e.target.value)} /></div>
+              </div>
+              <div className="flex gap-8" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+                <button className="btn btn-ghost" onClick={() => { setEditMode(false); load(); }}>Annuler</button>
+                <button className="btn btn-primary" onClick={saveIdentite}><Icon name="check" size={12} /> Enregistrer</button>
+              </div>
+            </div>
+          )}
         </div>
-        <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" /> Retour</button>
+        {!editMode && <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" /> Retour</button>}
       </div>
 
       <div className="grid-2-1">
@@ -279,6 +354,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           <div className="tabs">
             <div className={'tab ' + (tab === 'dispos' ? 'active' : '')} onClick={() => setTab('dispos')}>Disponibilités</div>
             <div className={'tab ' + (tab === 'profil' ? 'active' : '')} onClick={() => setTab('profil')}>Profil</div>
+            <div className={'tab ' + (tab === 'actions' ? 'active' : '')} onClick={() => setTab('actions')}>Actions</div>
           </div>
 
           {tab === 'dispos' && (
@@ -311,6 +387,56 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
               </div>
               <div className="help mt-8">Envoie ce lien à l’intervenant (mail, message…). Il pourra y revenir à volonté. La régénération invalide l’ancien lien.</div>
               {!inter.token_actif && <div className="chip danger mt-8">Lien actuellement désactivé</div>}
+            </div>
+          )}
+
+          {tab === 'actions' && (
+            <div className="card">
+              <div className="card-title">Actions sur cet intervenant</div>
+
+              {inter.actif ? (
+                <div style={{ padding: '8px 0', borderBottom: '1px solid var(--bg-alt)' }}>
+                  <div className="flex-between" style={{ alignItems: 'flex-start', gap: 16 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Archiver</div>
+                      <div className="text-sm text-muted">
+                        L’intervenant disparaît de la liste active mais toutes ses données (dispos, notes, historique) sont conservées. Réversible : tu peux le réactiver à tout moment.
+                      </div>
+                    </div>
+                    <button className="btn btn-ghost btn-sm" onClick={archiver} style={{ flexShrink: 0 }}>
+                      <Icon name="x" size={12} /> Archiver
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '8px 0', borderBottom: '1px solid var(--bg-alt)' }}>
+                  <div className="flex-between" style={{ alignItems: 'flex-start', gap: 16 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Réactiver</div>
+                      <div className="text-sm text-muted">
+                        L’intervenant est actuellement archivé. Réactive-le pour qu’il réapparaisse dans la liste active.
+                      </div>
+                    </div>
+                    <button className="btn btn-primary btn-sm" onClick={reactiver} style={{ flexShrink: 0 }}>
+                      <Icon name="check" size={12} /> Réactiver
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ padding: '12px 0' }}>
+                <div className="flex-between" style={{ alignItems: 'flex-start', gap: 16 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--danger)' }}>Supprimer définitivement</div>
+                    <div className="text-sm text-muted">
+                      Supprime l’intervenant et <strong>toutes ses données</strong> : disponibilités, notes par matière, niveaux, commentaires. <strong>Cette action est irréversible.</strong> Préfère « Archiver » sauf pour les comptes de test.
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setShowDeleteConfirm(true); setDeleteConfirmText(''); }} style={{ flexShrink: 0, color: 'var(--danger)', borderColor: 'var(--danger)' }}>
+                    Supprimer…
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -368,6 +494,43 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           </div>
         </div>
       </div>
+
+      {showDeleteConfirm && (
+        <div className="modal-backdrop" onClick={() => setShowDeleteConfirm(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+            <div className="modal-head">
+              <h3 style={{ color: 'var(--danger)' }}>Suppression définitive</h3>
+              <div className="modal-close" onClick={() => setShowDeleteConfirm(false)}><Icon name="x" size={16} /></div>
+            </div>
+            <div className="text-sm" style={{ marginBottom: 12 }}>
+              Tu es sur le point de supprimer <strong>{inter.prenom} {inter.nom}</strong> et toutes ses données associées (disponibilités, notes, commentaires).
+            </div>
+            <div className="text-sm" style={{ background: '#ffe4e4', padding: '10px 12px', borderRadius: 6, marginBottom: 16, color: 'var(--danger)' }}>
+              <strong>⚠ Cette action est irréversible.</strong> Aucune sauvegarde n’est conservée.
+            </div>
+            <div className="field">
+              <div className="label">Pour confirmer, tape le nom complet : <strong>{inter.prenom} {inter.nom}</strong></div>
+              <input
+                value={deleteConfirmText}
+                onChange={e => setDeleteConfirmText(e.target.value)}
+                placeholder={`${inter.prenom} ${inter.nom}`}
+                autoFocus
+              />
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={() => setShowDeleteConfirm(false)}>Annuler</button>
+              <button
+                className="btn btn-primary"
+                disabled={deleteConfirmText.trim() !== `${inter.prenom} ${inter.nom}`}
+                style={deleteConfirmText.trim() === `${inter.prenom} ${inter.nom}` ? { background: 'var(--danger)' } : {}}
+                onClick={supprimerDefinitivement}
+              >
+                Supprimer définitivement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

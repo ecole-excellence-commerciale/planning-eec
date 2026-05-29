@@ -132,10 +132,12 @@ window.db = {
   // ----------------------------------------------------------
   // INTERVENANTS (admin)
   // ----------------------------------------------------------
-  async getIntervenants() {
+  async getIntervenants(includeArchives = false) {
     // Récupère intervenants + leurs niveaux + leurs ratings, en 3 requêtes fusionnées
-    const { data: intervenants, error } = await _client
-      .from('intervenants').select('*').eq('actif', true).order('nom');
+    // Par défaut : seulement les actifs. includeArchives=true pour aussi voir les archivés.
+    let query = _client.from('intervenants').select('*').order('nom');
+    if (!includeArchives) query = query.eq('actif', true);
+    const { data: intervenants, error } = await query;
     if (error) throw error;
 
     const { data: liens } = await _client.from('intervenant_niveaux').select('*');
@@ -180,6 +182,20 @@ window.db = {
 
   async deactivateIntervenant(id) {
     const { error } = await _client.from('intervenants').update({ actif: false }).eq('id', id);
+    if (error) throw error;
+  },
+
+  // Réactiver un intervenant archivé (passe actif=false → actif=true)
+  async reactivateIntervenant(id) {
+    const { error } = await _client.from('intervenants').update({ actif: true }).eq('id', id);
+    if (error) throw error;
+  },
+
+  // SUPPRESSION DÉFINITIVE — irréversible. Grâce aux contraintes ON DELETE CASCADE
+  // du schéma, supprimer l'intervenant supprime aussi automatiquement : ses dispos,
+  // ses ratings, ses liens niveaux, ses commentaires de semaine.
+  async deleteIntervenant(id) {
+    const { error } = await _client.from('intervenants').delete().eq('id', id);
     if (error) throw error;
   },
 

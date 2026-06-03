@@ -602,62 +602,371 @@ const PageCampagnes = ({ data, onReload }) => {
 };
 
 // ---- PARAMÈTRES ----
+// ============================================================
+// PARAMÈTRES — niveaux + catégories (arborescence avec modules)
+// ============================================================
+
 const PageParametres = ({ data, onReload }) => {
   const toast = useToast();
-  const { niveaux, categories } = data;
-  const [newNiveau, setNewNiveau] = useState('');
-  const [newCategorie, setNewCategorie] = useState('');
+  const { niveaux, categories, modules, interParCategorie } = data;
 
+  // ---- État niveau (inchangé, simple) ----
+  const [newNiveau, setNewNiveau] = useState('');
+
+  // ---- État catégories ----
+  const [expanded, setExpanded] = useState({}); // { catId: true } pour les dépliées
+  const [editingCat, setEditingCat] = useState(null); // catId en cours d'édition
+  const [editCatText, setEditCatText] = useState('');
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [newCatText, setNewCatText] = useState('');
+
+  // ---- État modules ----
+  const [editingMod, setEditingMod] = useState(null); // modId en cours d'édition
+  const [editModText, setEditModText] = useState('');
+  const [addingModFor, setAddingModFor] = useState(null); // catId en mode "ajout de module"
+  const [newModText, setNewModText] = useState('');
+
+  // ---- État modales de suppression définitive ----
+  const [deleteCatModal, setDeleteCatModal] = useState(null); // {id, label, nbModules, nbNotes}
+  const [deleteCatConfirm, setDeleteCatConfirm] = useState('');
+  const [deleteModModal, setDeleteModModal] = useState(null); // {id, label, categorieLabel}
+  const [deleteModConfirm, setDeleteModConfirm] = useState('');
+
+  // Helpers
+  const modulesByCat = useMemo(() => {
+    const map = {};
+    for (const m of modules) {
+      (map[m.categorie_id] = map[m.categorie_id] || []).push(m);
+    }
+    return map;
+  }, [modules]);
+
+  const toggleExpand = (catId) => setExpanded(e => ({ ...e, [catId]: !e[catId] }));
+
+  // ---- ACTIONS NIVEAUX ----
   const addNiveau = async () => {
     if (!newNiveau.trim()) return;
     const colors = ['level-bac2', 'level-mastere', 'level-bootcamp'];
     await db.addNiveau(newNiveau.trim(), colors[niveaux.length % 3], niveaux.length + 1);
     setNewNiveau(''); toast('Niveau ajouté', 'success'); onReload();
   };
-  const addCategorie = async () => {
-    if (!newCategorie.trim()) return;
-    await db.addCategorie(newCategorie.trim(), categories.length + 1);
-    setNewCategorie(''); toast('Catégorie ajoutée', 'success'); onReload();
+  const delNiveau = async (id) => {
+    if (confirm('Retirer ce niveau ?')) {
+      await db.deactivateNiveau(id); toast('Niveau retiré'); onReload();
+    }
   };
-  const delNiveau = async (id) => { if (confirm('Retirer ce niveau ?')) { await db.deactivateNiveau(id); toast('Niveau retiré'); onReload(); } };
-  const delCategorie = async (id) => { if (confirm('Retirer cette catégorie ?')) { await db.deactivateCategorie(id); toast('Catégorie retirée'); onReload(); } };
+
+  // ---- ACTIONS CATÉGORIES ----
+  const startEditCat = (cat) => {
+    setEditingCat(cat.id); setEditCatText(cat.label);
+  };
+  const saveEditCat = async (catId) => {
+    if (!editCatText.trim()) { setEditingCat(null); return; }
+    await db.renameCategorie(catId, editCatText.trim());
+    toast('Catégorie renommée', 'success');
+    setEditingCat(null); onReload();
+  };
+  const addCat = async () => {
+    if (!newCatText.trim()) { setShowAddCat(false); return; }
+    await db.addCategorie(newCatText.trim(), categories.length + 1);
+    toast('Catégorie ajoutée', 'success');
+    setNewCatText(''); setShowAddCat(false); onReload();
+  };
+  const askDeleteCat = (cat) => {
+    const nbModules = (modulesByCat[cat.id] || []).length;
+    const nbNotes = interParCategorie[cat.id] || 0;
+    setDeleteCatModal({ id: cat.id, label: cat.label, nbModules, nbNotes });
+    setDeleteCatConfirm('');
+  };
+  const confirmDeleteCat = async () => {
+    await db.deleteCategorie(deleteCatModal.id);
+    toast('Catégorie supprimée', 'success');
+    setDeleteCatModal(null); onReload();
+  };
+
+  // ---- ACTIONS MODULES ----
+  const startEditMod = (mod) => {
+    setEditingMod(mod.id); setEditModText(mod.label);
+  };
+  const saveEditMod = async (modId) => {
+    if (!editModText.trim()) { setEditingMod(null); return; }
+    await db.renameModule(modId, editModText.trim());
+    toast('Module renommé', 'success');
+    setEditingMod(null); onReload();
+  };
+  const startAddMod = (catId) => {
+    setAddingModFor(catId); setNewModText(''); setExpanded(e => ({ ...e, [catId]: true }));
+  };
+  const addMod = async (catId) => {
+    if (!newModText.trim()) { setAddingModFor(null); return; }
+    const ordre = (modulesByCat[catId] || []).length + 1;
+    await db.addModule(catId, newModText.trim(), ordre);
+    toast('Module ajouté', 'success');
+    setNewModText(''); setAddingModFor(null); onReload();
+  };
+  const askDeleteMod = (mod, catLabel) => {
+    setDeleteModModal({ id: mod.id, label: mod.label, categorieLabel: catLabel });
+    setDeleteModConfirm('');
+  };
+  const confirmDeleteMod = async () => {
+    await db.deleteModule(deleteModModal.id);
+    toast('Module supprimé', 'success');
+    setDeleteModModal(null); onReload();
+  };
+
+  // ---- TRI : catégories triées par ordre ----
+  const sortedCats = [...categories].sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
 
   return (
     <div className="page-content">
-      <div className="page-header"><div><div className="breadcrumb">GESTION</div><h1 className="page-title display-dot">Niveaux & catégories</h1>
-        <div className="page-subtitle">Paramètres de qualification des intervenants</div></div></div>
-
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Niveaux</div><span className="text-xs text-muted">{niveaux.length}</span></div>
-          <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
-            {niveaux.map(n => <span key={n.id} className={'chip ' + n.couleur} style={{ padding: '6px 12px' }}>{n.label}<span style={{ marginLeft: 6, cursor: 'pointer', opacity: 0.6 }} onClick={() => delNiveau(n.id)}>×</span></span>)}
-          </div>
-          <div className="flex gap-8">
-            <input type="text" placeholder="Ex. Bac+3" value={newNiveau} onChange={e => setNewNiveau(e.target.value)} onKeyDown={e => e.key === 'Enter' && addNiveau()} />
-            <button className="btn btn-primary btn-sm" onClick={addNiveau}><Icon name="plus" size={12} /></button>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Catégories</div><span className="text-xs text-muted">{categories.length}</span></div>
-          <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
-            {categories.map(m => <span key={m.id} className="tag">{m.label}<span className="x" onClick={() => delCategorie(m.id)}>×</span></span>)}
-          </div>
-          <div className="flex gap-8">
-            <input type="text" placeholder="Ex. Stratégie commerciale" value={newCategorie} onChange={e => setNewCategorie(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategorie()} />
-            <button className="btn btn-primary btn-sm" onClick={addCategorie}><Icon name="plus" size={12} /></button>
-          </div>
+      <div className="page-header">
+        <div>
+          <div className="breadcrumb">GESTION</div>
+          <h1 className="page-title display-dot">Niveaux & catégories</h1>
+          <div className="page-subtitle">Paramètres de qualification des intervenants</div>
         </div>
       </div>
 
+      {/* NIVEAUX (carte compacte en haut) */}
+      <div className="card mb-16">
+        <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Niveaux</div><span className="text-xs text-muted">{niveaux.length}</span></div>
+        <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
+          {niveaux.map(n => (
+            <span key={n.id} className={'chip ' + n.couleur} style={{ padding: '6px 12px' }}>
+              {n.label}
+              <span style={{ marginLeft: 6, cursor: 'pointer', opacity: 0.6 }} onClick={() => delNiveau(n.id)}>×</span>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-8">
+          <input type="text" placeholder="Ex. Bac+3" value={newNiveau}
+            onChange={e => setNewNiveau(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addNiveau()} />
+          <button className="btn btn-primary btn-sm" onClick={addNiveau}><Icon name="plus" size={12} /></button>
+        </div>
+      </div>
+
+      {/* CATÉGORIES & MODULES (arborescence) */}
+      <div className="card">
+        <div className="card-header" style={{ marginBottom: 12 }}>
+          <div className="card-title" style={{ marginBottom: 0 }}>Catégories & modules</div>
+          <div className="flex gap-8" style={{ alignItems: 'center' }}>
+            <span className="text-xs text-muted">{categories.length} catégories · {modules.length} modules</span>
+            <button className="btn btn-primary btn-sm" onClick={() => { setShowAddCat(true); setNewCatText(''); }}>
+              <Icon name="plus" size={12} /> Nouvelle catégorie
+            </button>
+          </div>
+        </div>
+
+        <div className="text-sm text-muted mb-16">
+          Clique sur une catégorie pour voir ses modules. Double-clique sur un nom pour le renommer.
+        </div>
+
+        {/* Ligne d'ajout de catégorie */}
+        {showAddCat && (
+          <div style={{ background: 'var(--cyan-light)', padding: 12, borderRadius: 8, marginBottom: 12 }}>
+            <div className="flex gap-8">
+              <input type="text" placeholder="Nom de la nouvelle catégorie" autoFocus
+                value={newCatText}
+                onChange={e => setNewCatText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addCat(); if (e.key === 'Escape') setShowAddCat(false); }} />
+              <button className="btn btn-primary btn-sm" onClick={addCat}><Icon name="check" size={12} /> Ajouter</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowAddCat(false)}>Annuler</button>
+            </div>
+          </div>
+        )}
+
+        {/* Arborescence des catégories */}
+        {sortedCats.length === 0 ? (
+          <div className="text-muted text-sm" style={{ textAlign: 'center', padding: 30 }}>
+            Aucune catégorie. Clique sur « Nouvelle catégorie » pour commencer.
+          </div>
+        ) : sortedCats.map(cat => {
+          const catModules = (modulesByCat[cat.id] || []).slice().sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+          const nbInter = interParCategorie[cat.id] || 0;
+          const isExpanded = expanded[cat.id];
+          const isEmpty = catModules.length === 0 && nbInter === 0;
+          return (
+            <div key={cat.id} style={{ borderTop: '1px solid var(--bg-alt)' }}>
+              {/* Ligne catégorie */}
+              <div className="flex-between" style={{ padding: '10px 4px', alignItems: 'center', gap: 8 }}>
+                <div className="flex gap-8" style={{ alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  <span onClick={() => toggleExpand(cat.id)}
+                    style={{ cursor: 'pointer', display: 'inline-block', transition: 'transform 0.15s', transform: isExpanded ? 'rotate(90deg)' : 'none', color: 'var(--navy)' }}>
+                    <Icon name="chevronRight" size={14} />
+                  </span>
+                  {editingCat === cat.id ? (
+                    <input type="text" autoFocus value={editCatText}
+                      onChange={e => setEditCatText(e.target.value)}
+                      onBlur={() => saveEditCat(cat.id)}
+                      onKeyDown={e => { if (e.key === 'Enter') saveEditCat(cat.id); if (e.key === 'Escape') setEditingCat(null); }}
+                      style={{ flex: 1, maxWidth: 360 }} />
+                  ) : (
+                    <span onDoubleClick={() => startEditCat(cat)}
+                      onClick={() => toggleExpand(cat.id)}
+                      style={{ fontWeight: 600, color: 'var(--navy)', cursor: 'pointer', userSelect: 'none' }}>
+                      {cat.label}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-8" style={{ alignItems: 'center' }}>
+                  <span className="text-xs" style={{ color: isEmpty ? 'var(--danger)' : 'var(--text-muted)' }}>
+                    {catModules.length} module{catModules.length > 1 ? 's' : ''}
+                    {' · '}
+                    {nbInter} intervenant{nbInter > 1 ? 's' : ''} noté{nbInter > 1 ? 's' : ''}
+                  </span>
+                  <button className="btn btn-ghost btn-sm" title="Renommer" onClick={() => startEditCat(cat)}>
+                    <Icon name="edit" size={12} />
+                  </button>
+                  <button className="btn btn-ghost btn-sm" title="Supprimer définitivement"
+                    style={{ color: 'var(--danger)' }} onClick={() => askDeleteCat(cat)}>
+                    <Icon name="x" size={12} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Modules de la catégorie (dépliés) */}
+              {isExpanded && (
+                <div style={{ padding: '4px 0 12px 36px', background: 'var(--bg-alt)' }}>
+                  {catModules.length === 0 && addingModFor !== cat.id && (
+                    <div className="text-xs text-muted" style={{ padding: '6px 0' }}>
+                      Pas encore de module dans cette catégorie.
+                    </div>
+                  )}
+                  {catModules.map(mod => (
+                    <div key={mod.id} className="flex-between" style={{ padding: '4px 12px 4px 4px', alignItems: 'center' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {editingMod === mod.id ? (
+                          <input type="text" autoFocus value={editModText}
+                            onChange={e => setEditModText(e.target.value)}
+                            onBlur={() => saveEditMod(mod.id)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveEditMod(mod.id); if (e.key === 'Escape') setEditingMod(null); }}
+                            style={{ width: '100%', maxWidth: 460 }} />
+                        ) : (
+                          <span className="text-sm"
+                            onDoubleClick={() => startEditMod(mod)}
+                            style={{ cursor: 'text', userSelect: 'none' }}>
+                            {mod.label}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex gap-4">
+                        <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px' }} title="Renommer" onClick={() => startEditMod(mod)}>
+                          <Icon name="edit" size={11} />
+                        </button>
+                        <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', color: 'var(--danger)' }} title="Supprimer définitivement"
+                          onClick={() => askDeleteMod(mod, cat.label)}>
+                          <Icon name="x" size={11} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Ajout de module */}
+                  {addingModFor === cat.id ? (
+                    <div className="flex gap-8" style={{ padding: '6px 4px', alignItems: 'center' }}>
+                      <input type="text" placeholder="Nom du module" autoFocus value={newModText}
+                        onChange={e => setNewModText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') addMod(cat.id); if (e.key === 'Escape') setAddingModFor(null); }}
+                        style={{ flex: 1, maxWidth: 460 }} />
+                      <button className="btn btn-primary btn-sm" onClick={() => addMod(cat.id)}>
+                        <Icon name="check" size={11} />
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setAddingModFor(null)}>Annuler</button>
+                    </div>
+                  ) : (
+                    <div style={{ padding: '4px 0' }}>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => startAddMod(cat.id)}>
+                        <Icon name="plus" size={11} /> Ajouter un module
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* TARIFICATION (info) */}
       <div className="card mt-24">
         <div className="card-title">Tarification</div>
-        <div className="text-sm text-muted mb-16">Une journée d’intervention dure <strong>{window.HEURES_PAR_JOUR}h</strong> (paramétrable dans le fichier config.js). TJM = taux horaire × {window.HEURES_PAR_JOUR}.</div>
+        <div className="text-sm text-muted mb-16">
+          Une journée d’intervention dure <strong>{window.HEURES_PAR_JOUR}h</strong> (paramétrable dans le fichier config.js).
+          TJM = taux horaire × {window.HEURES_PAR_JOUR}.
+        </div>
         <div style={{ padding: '12px 14px', background: 'var(--cyan-light)', borderRadius: 8, display: 'inline-block' }}>
           <span className="text-sm">Exemple — 75 €/h → TJM <strong>{fmtEur(calcTJM(75))}</strong> · ½ j <strong>{fmtEur(calcDemiJournee(75))}</strong></span>
         </div>
       </div>
+
+      {/* MODALE : suppression définitive d'une catégorie */}
+      {deleteCatModal && (
+        <div className="modal-backdrop" onClick={() => setDeleteCatModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 500 }}>
+            <div className="modal-head">
+              <h3 style={{ color: 'var(--danger)' }}>Supprimer la catégorie</h3>
+              <div className="modal-close" onClick={() => setDeleteCatModal(null)}><Icon name="x" size={16} /></div>
+            </div>
+            <div className="text-sm" style={{ marginBottom: 12 }}>
+              Tu vas supprimer <strong>{deleteCatModal.label}</strong> et tout ce qui y est rattaché :
+            </div>
+            <ul style={{ background: '#ffe4e4', padding: '10px 12px 10px 32px', borderRadius: 6, marginBottom: 16, color: 'var(--danger)', fontSize: 13 }}>
+              <li><strong>{deleteCatModal.nbModules}</strong> module{deleteCatModal.nbModules > 1 ? 's' : ''} de cette catégorie</li>
+              <li><strong>{deleteCatModal.nbNotes}</strong> intervenant{deleteCatModal.nbNotes > 1 ? 's' : ''} noté{deleteCatModal.nbNotes > 1 ? 's' : ''} dans cette catégorie (toutes les notes seront perdues)</li>
+              {deleteCatModal.nbModules > 0 && <li>Les créneaux du programme-type rattachés à ces modules deviendront « sans module assigné »</li>}
+            </ul>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', marginBottom: 12 }}>⚠ Cette action est irréversible.</div>
+            <div className="field">
+              <div className="label">Pour confirmer, tape le nom : <strong>{deleteCatModal.label}</strong></div>
+              <input value={deleteCatConfirm} onChange={e => setDeleteCatConfirm(e.target.value)}
+                placeholder={deleteCatModal.label} autoFocus />
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={() => setDeleteCatModal(null)}>Annuler</button>
+              <button className="btn btn-primary"
+                disabled={deleteCatConfirm.trim() !== deleteCatModal.label}
+                style={deleteCatConfirm.trim() === deleteCatModal.label ? { background: 'var(--danger)' } : {}}
+                onClick={confirmDeleteCat}>
+                Supprimer définitivement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE : suppression définitive d'un module */}
+      {deleteModModal && (
+        <div className="modal-backdrop" onClick={() => setDeleteModModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-head">
+              <h3 style={{ color: 'var(--danger)' }}>Supprimer le module</h3>
+              <div className="modal-close" onClick={() => setDeleteModModal(null)}><Icon name="x" size={16} /></div>
+            </div>
+            <div className="text-sm" style={{ marginBottom: 12 }}>
+              Tu vas supprimer le module <strong>{deleteModModal.label}</strong> (catégorie <em>{deleteModModal.categorieLabel}</em>).
+            </div>
+            <div className="text-sm" style={{ background: '#fff8e5', padding: '10px 12px', borderRadius: 6, marginBottom: 16 }}>
+              Les créneaux du programme-type qui utilisaient ce module deviendront « sans module assigné ». Tu pourras les ré-assigner depuis l'écran Programme-type.
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', marginBottom: 12 }}>⚠ Cette action est irréversible.</div>
+            <div className="field">
+              <div className="label">Pour confirmer, tape le nom : <strong>{deleteModModal.label}</strong></div>
+              <input value={deleteModConfirm} onChange={e => setDeleteModConfirm(e.target.value)}
+                placeholder={deleteModModal.label} autoFocus />
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={() => setDeleteModModal(null)}>Annuler</button>
+              <button className="btn btn-primary"
+                disabled={deleteModConfirm.trim() !== deleteModModal.label}
+                style={deleteModConfirm.trim() === deleteModModal.label ? { background: 'var(--danger)' } : {}}
+                onClick={confirmDeleteMod}>
+                Supprimer définitivement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

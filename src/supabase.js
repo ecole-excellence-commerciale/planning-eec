@@ -89,6 +89,24 @@ window.db = {
     return data;
   },
 
+  // Renommer une catégorie (édition inline)
+  async renameCategorie(id, label) {
+    const { error } = await _client
+      .from('categories').update({ label }).eq('id', id);
+    if (error) throw error;
+  },
+
+  // Suppression DÉFINITIVE d'une catégorie : cascade sur ses modules
+  // (via ON DELETE CASCADE) ET sur les ratings d'intervenants liés.
+  async deleteCategorie(id) {
+    // Les ratings sont liés à categorie_id (sans CASCADE explicite dans le schéma
+    // original car la table s'appelait matieres). Le RLS admin nous autorise à
+    // les supprimer manuellement avant.
+    await _client.from('intervenant_ratings').delete().eq('categorie_id', id);
+    const { error } = await _client.from('categories').delete().eq('id', id);
+    if (error) throw error;
+  },
+
   async deactivateNiveau(id) {
     const { error } = await _client.from('niveaux').update({ actif: false }).eq('id', id);
     if (error) throw error;
@@ -97,6 +115,54 @@ window.db = {
   async deactivateCategorie(id) {
     const { error } = await _client.from('categories').update({ actif: false }).eq('id', id);
     if (error) throw error;
+  },
+
+  // ----------------------------------------------------------
+  // MODULES (rattachés à une catégorie)
+  // ----------------------------------------------------------
+  async getModules() {
+    const { data, error } = await _client
+      .from('modules').select('*').eq('actif', true).order('ordre');
+    if (error) throw error;
+    return data;
+  },
+
+  async addModule(categorieId, label, ordre) {
+    const { data, error } = await _client
+      .from('modules').insert({ categorie_id: categorieId, label, ordre })
+      .select().single();
+    if (error) throw error;
+    return data;
+  },
+
+  async renameModule(id, label) {
+    const { error } = await _client
+      .from('modules').update({ label }).eq('id', id);
+    if (error) throw error;
+  },
+
+  // Suppression DÉFINITIVE d'un module : cascade automatique sur les créneaux
+  // du programme (programme_creneaux.module_id) → SET NULL, donc pas de perte
+  // de structure. Les éventuels promo_planning sont aussi mis à jour à NULL.
+  async deleteModule(id) {
+    const { error } = await _client.from('modules').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  // Compteur : nombre d'intervenants ayant au moins une note dans cette catégorie
+  async countIntervenantsParCategorie() {
+    const { data, error } = await _client
+      .from('intervenant_ratings').select('categorie_id, intervenant_id');
+    if (error) throw error;
+    // Compter les intervenants distincts par catégorie
+    const map = {};
+    for (const r of (data || [])) {
+      if (!map[r.categorie_id]) map[r.categorie_id] = new Set();
+      map[r.categorie_id].add(r.intervenant_id);
+    }
+    return Object.fromEntries(
+      Object.entries(map).map(([k, v]) => [k, v.size])
+    );
   },
 
   // ----------------------------------------------------------

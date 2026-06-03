@@ -59,7 +59,7 @@ window.db = {
   },
 
   // ----------------------------------------------------------
-  // RÉFÉRENCES : niveaux & matières
+  // RÉFÉRENCES : niveaux & catégories
   // ----------------------------------------------------------
   async getNiveaux() {
     const { data, error } = await _client
@@ -68,9 +68,9 @@ window.db = {
     return data;
   },
 
-  async getMatieres() {
+  async getCategories() {
     const { data, error } = await _client
-      .from('matieres').select('*').eq('actif', true).order('ordre');
+      .from('categories').select('*').eq('actif', true).order('ordre');
     if (error) throw error;
     return data;
   },
@@ -82,9 +82,9 @@ window.db = {
     return data;
   },
 
-  async addMatiere(label, ordre) {
+  async addCategorie(label, ordre) {
     const { data, error } = await _client
-      .from('matieres').insert({ label, ordre }).select().single();
+      .from('categories').insert({ label, ordre }).select().single();
     if (error) throw error;
     return data;
   },
@@ -94,8 +94,8 @@ window.db = {
     if (error) throw error;
   },
 
-  async deactivateMatiere(id) {
-    const { error } = await _client.from('matieres').update({ actif: false }).eq('id', id);
+  async deactivateCategorie(id) {
+    const { error } = await _client.from('categories').update({ actif: false }).eq('id', id);
     if (error) throw error;
   },
 
@@ -147,7 +147,7 @@ window.db = {
       ...i,
       niveaux: (liens || []).filter(l => l.intervenant_id === i.id).map(l => l.niveau_id),
       ratings: Object.fromEntries(
-        (ratings || []).filter(r => r.intervenant_id === i.id).map(r => [r.matiere_id, r.note])
+        (ratings || []).filter(r => r.intervenant_id === i.id).map(r => [r.categorie_id, r.note])
       ),
     }));
   },
@@ -163,7 +163,7 @@ window.db = {
     return {
       ...data,
       niveaux: (liens || []).map(l => l.niveau_id),
-      ratings: Object.fromEntries((ratings || []).map(r => [r.matiere_id, r.note])),
+      ratings: Object.fromEntries((ratings || []).map(r => [r.categorie_id, r.note])),
     };
   },
 
@@ -224,15 +224,15 @@ window.db = {
     }
   },
 
-  // Rating d'une matière (upsert ou suppression si note=0)
-  async setRating(intervenantId, matiereId, note) {
+  // Rating d'une catégorie (upsert ou suppression si note=0)
+  async setRating(intervenantId, categorieId, note) {
     if (note === 0) {
       const { error } = await _client.from('intervenant_ratings')
-        .delete().eq('intervenant_id', intervenantId).eq('matiere_id', matiereId);
+        .delete().eq('intervenant_id', intervenantId).eq('categorie_id', categorieId);
       if (error) throw error;
     } else {
       const { error } = await _client.from('intervenant_ratings')
-        .upsert({ intervenant_id: intervenantId, matiere_id: matiereId, note });
+        .upsert({ intervenant_id: intervenantId, categorie_id: categorieId, note });
       if (error) throw error;
     }
   },

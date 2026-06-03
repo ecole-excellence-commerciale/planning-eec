@@ -8,16 +8,16 @@ const AdminApp = () => {
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState({
-    intervenants: [], niveaux: [], matieres: [], campagnes: [], campagne: null, dispos: []
+    intervenants: [], niveaux: [], categories: [], campagnes: [], campagne: null, dispos: []
   });
 
   const loadAll = async () => {
-    const [niveaux, matieres, campagnes, intervenants] = await Promise.all([
-      db.getNiveaux(), db.getMatieres(), db.getCampagnes(), db.getIntervenants()
+    const [niveaux, categories, campagnes, intervenants] = await Promise.all([
+      db.getNiveaux(), db.getCategories(), db.getCampagnes(), db.getIntervenants()
     ]);
     const campagne = campagnes.find(c => c.statut === 'ouverte') || campagnes[0] || null;
     const dispos = campagne ? await db.getDisposCampagne(campagne.id) : [];
-    setData({ intervenants, niveaux, matieres, campagnes, campagne, dispos });
+    setData({ intervenants, niveaux, categories, campagnes, campagne, dispos });
     setLoading(false);
   };
 

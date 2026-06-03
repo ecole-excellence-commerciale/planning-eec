@@ -12,11 +12,11 @@ function lienIntervenant(token) {
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
   const run = useAsync();
-  const { intervenants, niveaux, matieres } = data;
+  const { intervenants, niveaux, categories } = data;
   const [search, setSearch] = useState('');
   const [filterStatut, setFilterStatut] = useState('all');
   const [filterNiveau, setFilterNiveau] = useState('all');
-  const [filterMatiere, setFilterMatiere] = useState('all');
+  const [filterCategorie, setFilterCategorie] = useState('all');
   const [sortBy, setSortBy] = useState('nom');
   const [showAdd, setShowAdd] = useState(false);
 
@@ -24,14 +24,14 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
     if (search && !`${i.prenom} ${i.nom} ${i.email || ''}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatut !== 'all' && i.statut !== filterStatut) return false;
     if (filterNiveau !== 'all' && !i.niveaux.includes(filterNiveau)) return false;
-    if (filterMatiere !== 'all' && !(filterMatiere in (i.ratings || {}))) return false;
+    if (filterCategorie !== 'all' && !(filterCategorie in (i.ratings || {}))) return false;
     return true;
   });
   filtered = [...filtered].sort((a, b) => {
     if (sortBy === 'tjm_asc') return (a.taux_horaire || 0) - (b.taux_horaire || 0);
     if (sortBy === 'tjm_desc') return (b.taux_horaire || 0) - (a.taux_horaire || 0);
     if (sortBy === 'rating') {
-      if (filterMatiere !== 'all') return (b.ratings[filterMatiere] || 0) - (a.ratings[filterMatiere] || 0);
+      if (filterCategorie !== 'all') return (b.ratings[filterCategorie] || 0) - (a.ratings[filterCategorie] || 0);
       return (avgRating(b.ratings) || 0) - (avgRating(a.ratings) || 0);
     }
     return `${a.nom}`.localeCompare(`${b.nom}`);
@@ -75,9 +75,9 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
           <option value="all">Tous les niveaux</option>
           {niveaux.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}
         </select>
-        <select value={filterMatiere} onChange={e => setFilterMatiere(e.target.value)}>
-          <option value="all">Toutes les matières</option>
-          {matieres.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+        <select value={filterCategorie} onChange={e => setFilterCategorie(e.target.value)}>
+          <option value="all">Toutes les catégories</option>
+          {categories.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
         <select value={sortBy} onChange={e => setSortBy(e.target.value)}>
           <option value="nom">Trier : Nom</option>
@@ -99,7 +99,7 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
             <thead>
               <tr>
                 <th>Intervenant</th><th>Niveaux</th>
-                <th>{filterMatiere === 'all' ? 'Compétences' : 'Note'}</th>
+                <th>{filterCategorie === 'all' ? 'Compétences' : 'Note'}</th>
                 <th>Taux / h</th><th>TJM</th><th>Statut</th><th>Lien</th><th></th>
               </tr>
             </thead>
@@ -121,12 +121,12 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
                       </div>
                     </td>
                     <td>
-                      {filterMatiere === 'all' ? (
+                      {filterCategorie === 'all' ? (
                         <div className="flex gap-8" style={{ alignItems: 'center' }}>
                           <span className="chip cyan">{nbMat} mat.</span>
                           {moy != null && <span className="flex gap-8" style={{ alignItems: 'center' }}><StarRating value={Math.round(moy)} readOnly size={13} /><span className="text-xs text-muted">{moy.toFixed(1)}</span></span>}
                         </div>
-                      ) : <StarRating value={i.ratings[filterMatiere] || 0} readOnly size={15} />}
+                      ) : <StarRating value={i.ratings[filterCategorie] || 0} readOnly size={15} />}
                     </td>
                     <td className="text-sm"><strong>{i.taux_horaire ? i.taux_horaire + ' €' : '—'}</strong></td>
                     <td className="text-sm">{fmtEur(calcTJM(i.taux_horaire))}</td>
@@ -146,7 +146,7 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
       )}
 
       <div className="mt-16 text-sm text-muted">
-        TJM = taux horaire × {window.HEURES_PAR_JOUR}h. Notes par matière confidentielles (jamais visibles côté intervenant).
+        TJM = taux horaire × {window.HEURES_PAR_JOUR}h. Notes par catégorie confidentielles (jamais visibles côté intervenant).
       </div>
 
       {showAdd && <ModalAjoutIntervenant niveaux={niveaux} onClose={() => setShowAdd(false)} onAdded={onReload} />}
@@ -218,7 +218,7 @@ const ModalAjoutIntervenant = ({ niveaux, onClose, onAdded }) => {
 // ---- FICHE INTERVENANT ----
 const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const toast = useToast();
-  const { niveaux, matieres, campagne } = data;
+  const { niveaux, categories, campagne } = data;
   const [inter, setInter] = useState(null);
   const [tab, setTab] = useState('dispos');
   const [tauxEdit, setTauxEdit] = useState('');
@@ -305,8 +305,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   };
   const copyLink = () => { navigator.clipboard.writeText(lienIntervenant(inter.token)); toast('Lien copié', 'success'); };
 
-  const matieresNotees = matieres.filter(m => m.id in inter.ratings);
-  const matieresNonNotees = matieres.filter(m => !(m.id in inter.ratings));
+  const categoriesNotees = categories.filter(m => m.id in inter.ratings);
+  const categoriesNonNotees = categories.filter(m => !(m.id in inter.ratings));
   const setEd = (k, v) => setEditForm(f => ({ ...f, [k]: v }));
 
   return (
@@ -429,7 +429,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--danger)' }}>Supprimer définitivement</div>
                     <div className="text-sm text-muted">
-                      Supprime l’intervenant et <strong>toutes ses données</strong> : disponibilités, notes par matière, niveaux, commentaires. <strong>Cette action est irréversible.</strong> Préfère « Archiver » sauf pour les comptes de test.
+                      Supprime l’intervenant et <strong>toutes ses données</strong> : disponibilités, notes par catégorie, niveaux, commentaires. <strong>Cette action est irréversible.</strong> Préfère « Archiver » sauf pour les comptes de test.
                     </div>
                   </div>
                   <button className="btn btn-ghost btn-sm" onClick={() => { setShowDeleteConfirm(true); setDeleteConfirmText(''); }} style={{ flexShrink: 0, color: 'var(--danger)', borderColor: 'var(--danger)' }}>
@@ -470,19 +470,19 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           </div>
 
           <div className="card">
-            <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Compétences par matière</div><span className="chip cyan text-xs">Confidentiel</span></div>
-            {matieresNotees.length === 0 && <div className="text-sm text-muted" style={{ padding: '6px 0' }}>Aucune matière notée.</div>}
-            {matieresNotees.map(m => (
+            <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Compétences par catégorie</div><span className="chip cyan text-xs">Confidentiel</span></div>
+            {categoriesNotees.length === 0 && <div className="text-sm text-muted" style={{ padding: '6px 0' }}>Aucune catégorie notée.</div>}
+            {categoriesNotees.map(m => (
               <div key={m.id} className="flex-between" style={{ padding: '8px 0', borderBottom: '1px solid var(--bg-alt)' }}>
                 <span className="text-sm" style={{ fontWeight: 500 }}>{m.label}</span>
                 <StarRating value={inter.ratings[m.id]} onChange={(n) => setRating(m.id, n)} />
               </div>
             ))}
-            {matieresNonNotees.length > 0 && (
+            {categoriesNonNotees.length > 0 && (
               <details style={{ marginTop: 12 }}>
-                <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--navy)', fontWeight: 600 }}>+ Noter une autre matière</summary>
+                <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--navy)', fontWeight: 600 }}>+ Noter une autre catégorie</summary>
                 <div style={{ marginTop: 8 }}>
-                  {matieresNonNotees.map(m => (
+                  {categoriesNonNotees.map(m => (
                     <div key={m.id} className="flex-between" style={{ padding: '6px 0' }}>
                       <span className="text-sm">{m.label}</span>
                       <StarRating value={0} onChange={(n) => setRating(m.id, n)} size={15} />
@@ -604,9 +604,9 @@ const PageCampagnes = ({ data, onReload }) => {
 // ---- PARAMÈTRES ----
 const PageParametres = ({ data, onReload }) => {
   const toast = useToast();
-  const { niveaux, matieres } = data;
+  const { niveaux, categories } = data;
   const [newNiveau, setNewNiveau] = useState('');
-  const [newMatiere, setNewMatiere] = useState('');
+  const [newCategorie, setNewCategorie] = useState('');
 
   const addNiveau = async () => {
     if (!newNiveau.trim()) return;
@@ -614,17 +614,17 @@ const PageParametres = ({ data, onReload }) => {
     await db.addNiveau(newNiveau.trim(), colors[niveaux.length % 3], niveaux.length + 1);
     setNewNiveau(''); toast('Niveau ajouté', 'success'); onReload();
   };
-  const addMatiere = async () => {
-    if (!newMatiere.trim()) return;
-    await db.addMatiere(newMatiere.trim(), matieres.length + 1);
-    setNewMatiere(''); toast('Matière ajoutée', 'success'); onReload();
+  const addCategorie = async () => {
+    if (!newCategorie.trim()) return;
+    await db.addCategorie(newCategorie.trim(), categories.length + 1);
+    setNewCategorie(''); toast('Catégorie ajoutée', 'success'); onReload();
   };
   const delNiveau = async (id) => { if (confirm('Retirer ce niveau ?')) { await db.deactivateNiveau(id); toast('Niveau retiré'); onReload(); } };
-  const delMatiere = async (id) => { if (confirm('Retirer cette matière ?')) { await db.deactivateMatiere(id); toast('Matière retirée'); onReload(); } };
+  const delCategorie = async (id) => { if (confirm('Retirer cette catégorie ?')) { await db.deactivateCategorie(id); toast('Catégorie retirée'); onReload(); } };
 
   return (
     <div className="page-content">
-      <div className="page-header"><div><div className="breadcrumb">GESTION</div><h1 className="page-title display-dot">Niveaux & matières</h1>
+      <div className="page-header"><div><div className="breadcrumb">GESTION</div><h1 className="page-title display-dot">Niveaux & catégories</h1>
         <div className="page-subtitle">Paramètres de qualification des intervenants</div></div></div>
 
       <div className="grid-2">
@@ -640,13 +640,13 @@ const PageParametres = ({ data, onReload }) => {
         </div>
 
         <div className="card">
-          <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Matières</div><span className="text-xs text-muted">{matieres.length}</span></div>
+          <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Catégories</div><span className="text-xs text-muted">{categories.length}</span></div>
           <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
-            {matieres.map(m => <span key={m.id} className="tag">{m.label}<span className="x" onClick={() => delMatiere(m.id)}>×</span></span>)}
+            {categories.map(m => <span key={m.id} className="tag">{m.label}<span className="x" onClick={() => delCategorie(m.id)}>×</span></span>)}
           </div>
           <div className="flex gap-8">
-            <input type="text" placeholder="Ex. Stratégie commerciale" value={newMatiere} onChange={e => setNewMatiere(e.target.value)} onKeyDown={e => e.key === 'Enter' && addMatiere()} />
-            <button className="btn btn-primary btn-sm" onClick={addMatiere}><Icon name="plus" size={12} /></button>
+            <input type="text" placeholder="Ex. Stratégie commerciale" value={newCategorie} onChange={e => setNewCategorie(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategorie()} />
+            <button className="btn btn-primary btn-sm" onClick={addCategorie}><Icon name="plus" size={12} /></button>
           </div>
         </div>
       </div>

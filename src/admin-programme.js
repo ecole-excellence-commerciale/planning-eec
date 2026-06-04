@@ -11,19 +11,41 @@ const JOUR_LETTRES = ['L', 'M', 'M', 'J', 'V'];
 // Palette de couleurs par catégorie (en tons pastels).
 // Couleurs choisies par Valentin pour les 6 catégories principales,
 // puis complétées harmonieusement pour les autres.
+// Plusieurs variantes de label sont prévues pour tolérer les renommages
+// (par ex. "Techniques de vente" et "Techniques de vente & relation client"
+// donnent toutes les deux la même couleur verte).
 const PALETTE_CATEGORIES = {
-  'Techniques de vente & relation client': { hue: 130, sat: 45 },  // vert
-  'Études de cas (mise en situation)':     { hue: 215, sat: 65 },  // bleu
-  'Anglais commercial':                    { hue: 175, sat: 50 },  // turquoise
-  'Communication & expression':            { hue: 275, sat: 50 },  // violet
-  'Soft skills & développement personnel': { hue: 330, sat: 60 },  // rose
-  'Outils & digital':                      { hue: 28,  sat: 30 },  // marron pâle
-  'Stratégie & marketing':                 { hue: 20,  sat: 70 },  // orange
-  'Management & finance':                  { hue: 220, sat: 22 },  // gris-bleu
-  'Évaluation & bilan':                    { hue: 50,  sat: 75 },  // jaune
-  'Préparation à la vie pro':              { hue: 8,   sat: 60 },  // corail
-  'Certification & jury':                  { hue: 42,  sat: 65 },  // or
-  'Spécial':                               { hue: 0,   sat: 0 },   // gris neutre
+  // Vert — Techniques de vente
+  'Techniques de vente':                   { hue: 130, sat: 45 },
+  'Techniques de vente & relation client': { hue: 130, sat: 45 },
+  // Bleu — Études de cas
+  'Études de cas':                         { hue: 215, sat: 65 },
+  'Études de cas (mise en situation)':     { hue: 215, sat: 65 },
+  // Orange — Anglais
+  'Anglais':                               { hue: 25,  sat: 70 },
+  'Anglais commercial':                    { hue: 25,  sat: 70 },
+  // Violet — Communication
+  'Communication':                         { hue: 275, sat: 50 },
+  'Communication & expression':            { hue: 275, sat: 50 },
+  // Rose — Soft skills / Développement personnel
+  'Développement personnel':               { hue: 330, sat: 60 },
+  'Soft skills':                           { hue: 330, sat: 60 },
+  'Soft skills & développement personnel': { hue: 330, sat: 60 },
+  // Marron pâle — Outils & digital
+  'Outils & digital':                      { hue: 28,  sat: 30 },
+  // Turquoise — Stratégie & marketing (peu utilisée pour l'instant)
+  'Stratégie & marketing':                 { hue: 175, sat: 50 },
+  // Gris-bleu — Management & finance
+  'Management & finance':                  { hue: 220, sat: 22 },
+  // Jaune — Évaluation
+  'Évaluation':                            { hue: 50,  sat: 75 },
+  'Évaluation & bilan':                    { hue: 50,  sat: 75 },
+  // Corail — Préparation à la vie pro
+  'Préparation à la vie pro':              { hue: 8,   sat: 60 },
+  // Or — Certification & jury
+  'Certification & jury':                  { hue: 42,  sat: 65 },
+  // Gris neutre — Spécial
+  'Spécial':                               { hue: 0,   sat: 0 },
 };
 
 // Retourne un objet {bg, fg, border} pour colorer un badge ou une case.

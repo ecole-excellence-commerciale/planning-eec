@@ -8,16 +8,45 @@
 const JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi'];
 const JOUR_LETTRES = ['L', 'M', 'M', 'J', 'V'];
 
-// Hash stable d'une chaîne → couleur pastel HSL (pour colorer les catégories)
+// Palette de couleurs par catégorie (en tons pastels).
+// Couleurs choisies par Valentin pour les 6 catégories principales,
+// puis complétées harmonieusement pour les autres.
+const PALETTE_CATEGORIES = {
+  'Techniques de vente & relation client': { hue: 130, sat: 45 },  // vert
+  'Études de cas (mise en situation)':     { hue: 215, sat: 65 },  // bleu
+  'Anglais commercial':                    { hue: 175, sat: 50 },  // turquoise
+  'Communication & expression':            { hue: 275, sat: 50 },  // violet
+  'Soft skills & développement personnel': { hue: 330, sat: 60 },  // rose
+  'Outils & digital':                      { hue: 28,  sat: 30 },  // marron pâle
+  'Stratégie & marketing':                 { hue: 20,  sat: 70 },  // orange
+  'Management & finance':                  { hue: 220, sat: 22 },  // gris-bleu
+  'Évaluation & bilan':                    { hue: 50,  sat: 75 },  // jaune
+  'Préparation à la vie pro':              { hue: 8,   sat: 60 },  // corail
+  'Certification & jury':                  { hue: 42,  sat: 65 },  // or
+  'Spécial':                               { hue: 0,   sat: 0 },   // gris neutre
+};
+
+// Retourne un objet {bg, fg, border} pour colorer un badge ou une case.
+// Utilise la palette explicite si la catégorie y figure, sinon génère une
+// couleur stable par hash du nom (pour les nouvelles catégories ajoutées).
 function couleurCategorie(label) {
-  if (!label) return { bg: '#f5f5f7', fg: '#666' };
-  let hash = 0;
-  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
+  if (!label) return { bg: '#f5f5f7', fg: '#666', border: '#ddd' };
+  let hue, sat;
+  const preset = PALETTE_CATEGORIES[label];
+  if (preset) {
+    hue = preset.hue;
+    sat = preset.sat;
+  } else {
+    // Fallback : hash du nom pour générer une couleur stable
+    let hash = 0;
+    for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) | 0;
+    hue = Math.abs(hash) % 360;
+    sat = 55;
+  }
   return {
-    bg: `hsl(${hue}, 70%, 92%)`,
-    fg: `hsl(${hue}, 55%, 28%)`,
-    border: `hsl(${hue}, 50%, 75%)`,
+    bg: `hsl(${hue}, ${sat}%, 92%)`,
+    fg: `hsl(${hue}, ${Math.max(sat + 10, 50)}%, 28%)`,
+    border: `hsl(${hue}, ${sat}%, 75%)`,
   };
 }
 

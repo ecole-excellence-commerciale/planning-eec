@@ -56,6 +56,7 @@ const Sidebar = ({ current, onNav, onLogout }) => {
     ]},
     { title: 'Gestion', items: [
       { id: 'intervenants', label: 'Intervenants', icon: 'users' },
+      { id: 'programme', label: 'Programme', icon: 'layout' },
       { id: 'campagnes', label: 'Campagnes', icon: 'calendar' },
       { id: 'parametres', label: 'Niveaux & catégories', icon: 'settings' },
     ]},

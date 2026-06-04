@@ -166,6 +166,67 @@ window.db = {
   },
 
   // ----------------------------------------------------------
+  // PROGRAMMES-TYPES & créneaux pédagogiques
+  // ----------------------------------------------------------
+  async getProgrammesTypes() {
+    const { data, error } = await _client
+      .from('programmes_types').select('*').order('label');
+    if (error) throw error;
+    return data;
+  },
+
+  // Récupère tous les créneaux d'un programme-type (jusqu'à 250 lignes max pour le Bac+2)
+  async getProgrammeCreneaux(programmeTypeId) {
+    const { data, error } = await _client
+      .from('programme_creneaux')
+      .select('*')
+      .eq('programme_type_id', programmeTypeId)
+      .order('semaine_num').order('jour').order('periode');
+    if (error) throw error;
+    return data;
+  },
+
+  // Créer un nouveau programme-type pour un niveau (utilisé quand on bascule
+  // vers Mastère/Bootcamp qui n'ont pas encore de programme)
+  async addProgrammeType(niveauId, label, nombreSemaines = 25) {
+    const { data, error } = await _client
+      .from('programmes_types')
+      .insert({ niveau_id: niveauId, label, nombre_semaines: nombreSemaines })
+      .select().single();
+    if (error) throw error;
+    return data;
+  },
+
+  // Met à jour le module assigné à un créneau (passe null pour vider)
+  async setCreneauModule(creneauId, moduleId) {
+    const { error } = await _client
+      .from('programme_creneaux')
+      .update({ module_id: moduleId })
+      .eq('id', creneauId);
+    if (error) throw error;
+  },
+
+  // Créer un créneau (si n'existe pas pour cette semaine/jour/période)
+  async addCreneau(programmeTypeId, semaineNum, jour, periode, moduleId = null) {
+    const { data, error } = await _client
+      .from('programme_creneaux')
+      .insert({
+        programme_type_id: programmeTypeId,
+        semaine_num: semaineNum, jour, periode, module_id: moduleId
+      })
+      .select().single();
+    if (error) throw error;
+    return data;
+  },
+
+  // Supprimer un créneau (efface complètement la case du programme)
+  async deleteCreneau(creneauId) {
+    const { error } = await _client
+      .from('programme_creneaux').delete().eq('id', creneauId);
+    if (error) throw error;
+  },
+
+  // ----------------------------------------------------------
   // CAMPAGNES
   // ----------------------------------------------------------
   async getCampagnes() {

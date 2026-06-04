@@ -111,16 +111,88 @@ const PagePlanning = ({ data, onReload }) => {
   };
 
   // Sauvegarde locale (sur la promo, pas sur le programme-type)
+  // Sauvegarde locale : update si entry existante, création si nouvelle case
   const saveModule = async (moduleId) => {
     if (!editing) return;
     try {
-      await db.setPromoPlanningModule(editing.planningId, moduleId);
-      toast('Créneau mis à jour pour cette promo', 'success');
+      if (editing.planningId) {
+        // Entry existante → update
+        await db.setPromoPlanningModule(editing.planningId, moduleId);
+      } else if (moduleId) {
+        // Pas d'entry et on assigne un module → création
+        await db.addPromoPlanningEntry(
+          promo.id, editing.semaineNum, editing.dateJour, editing.periode, moduleId
+        );
+      } else {
+        // Pas d'entry et pas de module → rien à faire
+        setEditing(null);
+        return;
+      }
+      toast('Planning mis à jour', 'success');
       const fresh = await db.getPromoPlanning(promo.id);
       setPlanning(fresh);
       setEditing(null);
     } catch (e) {
       console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
+  // ─── Drag-and-drop : déplacer ou intervertir des créneaux ───────────────
+  // dragging = info de la case source en cours de drag
+  const [dragging, setDragging] = useState(null);
+  // dragOverKey = clé "num-jour-periode" de la case actuellement survolée
+  const [dragOverKey, setDragOverKey] = useState(null);
+
+  const onDragStart = (e, src) => {
+    if (!src.moduleId) { e.preventDefault(); return; }
+    setDragging(src);
+    e.dataTransfer.effectAllowed = 'move';
+    // Mettre dans dataTransfer pour la compat navigateur
+    try { e.dataTransfer.setData('text/plain', src.planningId || ''); } catch {}
+  };
+  const onDragEnd = () => { setDragging(null); setDragOverKey(null); };
+  const onDragOver = (e, dstKey) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverKey !== dstKey) setDragOverKey(dstKey);
+  };
+  const onDragLeave = (e) => {
+    // On ne reset que si on quitte vraiment la case (pas un enfant)
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setDragOverKey(null);
+  };
+  const onDrop = async (e, dst) => {
+    e.preventDefault();
+    const src = dragging;
+    setDragging(null);
+    setDragOverKey(null);
+    if (!src || !src.moduleId) return;
+    // Même case → rien faire
+    if (src.dateJour === dst.dateJour && src.periode === dst.periode) return;
+    try {
+      if (dst.planningId && dst.moduleId) {
+        // Case cible occupée → SWAP des modules
+        await db.setPromoPlanningModule(dst.planningId, src.moduleId);
+        await db.setPromoPlanningModule(src.planningId, dst.moduleId);
+        toast('Modules permutés', 'success');
+      } else if (dst.planningId) {
+        // Case cible existe mais vide → MOVE
+        await db.setPromoPlanningModule(dst.planningId, src.moduleId);
+        await db.setPromoPlanningModule(src.planningId, null);
+        toast('Module déplacé', 'success');
+      } else {
+        // Case cible n'existe pas en base → CRÉATION + vidage source
+        await db.addPromoPlanningEntry(
+          promo.id, dst.semaineNum, dst.dateJour, dst.periode, src.moduleId
+        );
+        await db.setPromoPlanningModule(src.planningId, null);
+        toast('Module déplacé', 'success');
+      }
+      const fresh = await db.getPromoPlanning(promo.id);
+      setPlanning(fresh);
+    } catch (err) {
+      console.error(err);
+      toast(err.message || 'Erreur de déplacement', 'error');
     }
   };
 
@@ -252,7 +324,16 @@ const PagePlanning = ({ data, onReload }) => {
                               const dateJour = lundiD ? isoDate(new Date(lundiD.getTime() + jourIdx * 86400000)) : null;
                               const entry = dateJour ? findPlanningEntry(num, dateJour, periode) : null;
                               const info = entry ? moduleInfo(entry.module_id) : null;
-                              const style = info ? {
+                              const cellKey = `${num}-${jourIdx}-${periode}`;
+                              const isDragOver = dragOverKey === cellKey && dragging && (dragging.dateJour !== dateJour || dragging.periode !== periode);
+                              const isDragSource = dragging && entry && dragging.planningId === entry.id;
+                              const cellInfo = {
+                                planningId: entry?.id || null,
+                                semaineNum: num,
+                                dateJour, periode,
+                                moduleId: entry?.module_id || null,
+                              };
+                              const baseStyle = info ? {
                                 background: info.couleur.bg,
                                 color: info.couleur.fg,
                                 border: '1px solid ' + info.couleur.border,
@@ -261,27 +342,40 @@ const PagePlanning = ({ data, onReload }) => {
                                 color: 'var(--text-muted)',
                                 border: '1px dashed var(--border)',
                               };
-                              const clickable = !!entry;
+                              const hoverStyle = isDragOver ? {
+                                outline: '2px dashed var(--cyan)',
+                                outlineOffset: -2,
+                                background: 'var(--cyan-light)',
+                              } : {};
+                              const sourceStyle = isDragSource ? { opacity: 0.35 } : {};
+                              const draggable = !!(entry && info);
                               return (
                                 <td key={jourIdx} style={{ padding: 0 }}>
                                   <div
-                                    onClick={() => {
-                                      if (!entry) return;
-                                      setEditing({
-                                        planningId: entry.id,
-                                        semaineNum: num,
-                                        dateJour,
-                                        periode,
-                                        currentModuleId: entry.module_id,
-                                      });
-                                    }}
-                                    title={!entry ? "Pas de cours prévu ce créneau (jour férié, début/fin de promo, ou semaine tronquée)" : ""}
+                                    draggable={draggable}
+                                    onDragStart={(e) => onDragStart(e, cellInfo)}
+                                    onDragEnd={onDragEnd}
+                                    onDragOver={(e) => onDragOver(e, cellKey)}
+                                    onDragLeave={onDragLeave}
+                                    onDrop={(e) => onDrop(e, cellInfo)}
+                                    onClick={() => setEditing({
+                                      planningId: entry?.id || null,
+                                      semaineNum: num,
+                                      dateJour,
+                                      periode,
+                                      currentModuleId: entry?.module_id || null,
+                                    })}
+                                    title={info ? "Glisser pour déplacer, cliquer pour modifier" : "Cliquer pour assigner un module"}
                                     style={{
-                                      ...style,
-                                      padding: '8px 10px', borderRadius: 6, cursor: clickable ? 'pointer' : 'default',
+                                      ...baseStyle,
+                                      ...hoverStyle,
+                                      ...sourceStyle,
+                                      padding: '8px 10px', borderRadius: 6,
+                                      cursor: draggable ? 'grab' : 'pointer',
                                       fontSize: 11, fontWeight: 500, minHeight: 44,
                                       display: 'flex', alignItems: 'center', lineHeight: 1.3,
-                                      opacity: clickable ? 1 : 0.5,
+                                      opacity: isDragSource ? 0.35 : (info ? 1 : 0.6),
+                                      transition: 'background 0.1s, outline 0.1s',
                                     }}>
                                     {info ? (
                                       <div style={{ overflow: 'hidden' }}>
@@ -295,7 +389,7 @@ const PagePlanning = ({ data, onReload }) => {
                                     ) : entry ? (
                                       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>+ Assigner un module</span>
                                     ) : (
-                                      <span style={{ fontStyle: 'italic', opacity: 0.4 }}>— Pas de cours</span>
+                                      <span style={{ fontStyle: 'italic', opacity: 0.5 }}>+ Ajouter</span>
                                     )}
                                   </div>
                                 </td>

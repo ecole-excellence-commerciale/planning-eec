@@ -363,6 +363,23 @@ window.db = {
     if (error) throw error;
   },
 
+  // Créer une nouvelle entrée dans le planning d'une promo (= ajouter un créneau
+  // qui n'existait pas dans le programme-type initial). Utilisé quand on remplit
+  // une case "Pas de cours" depuis l'écran Planning.
+  async addPromoPlanningEntry(promoId, semaineNum, dateJour, periode, moduleId) {
+    const { data, error } = await _client
+      .from('promo_planning')
+      .insert({
+        promo_id: promoId,
+        semaine_num: semaineNum,
+        date_jour: dateJour,
+        periode, module_id: moduleId,
+      })
+      .select().single();
+    if (error) throw error;
+    return data;
+  },
+
   // Déduire les semaines d'une promo depuis son planning (= dates uniques des lundis)
   async getPromoSemaines(promoId) {
     const planning = await this.getPromoPlanning(promoId);

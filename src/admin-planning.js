@@ -23,43 +23,88 @@ const couleurCat = (typeof couleurCategorie !== 'undefined') ? couleurCategorie 
 
 const PagePlanning = ({ data, onReload }) => {
   const toast = useToast();
-  const { promos, niveaux, categories, modules } = data;
+  const { promos, niveaux, categories, modules, intervenants, campagne } = data;
 
   // Sélection de la promo (par défaut la 1ère)
   const [selectedPromoId, setSelectedPromoId] = useState(() => promos[0]?.id || null);
   const promo = promos.find(p => p.id === selectedPromoId) || null;
   const niveau = promo ? niveaux.find(n => n.id === promo.niveau_id) : null;
 
-  // Chargement du planning
+  // Chargement du planning + assignations inter-promos (pour détecter les conflits)
   const [planning, setPlanning] = useState([]);
+  const [assignationsAutres, setAssignationsAutres] = useState([]); // {intervenant_id, promo_id, date_jour, periode}
+  const [disposIntervenants, setDisposIntervenants] = useState([]); // dispos campagne actuelle
   const [loadingPlanning, setLoadingPlanning] = useState(false);
 
-  useEffect(() => {
-    if (!promo) { setPlanning([]); return; }
+  // Recharger le planning d'une promo + assignations + dispos
+  const loadPlanningEtAssignations = async (promoId) => {
+    if (!promoId) { setPlanning([]); setAssignationsAutres([]); return; }
     setLoadingPlanning(true);
-    db.getPromoPlanning(promo.id)
-      .then(setPlanning)
-      .catch(e => { console.error(e); toast('Erreur de chargement du planning', 'error'); })
-      .finally(() => setLoadingPlanning(false));
+    try {
+      const [p, autres] = await Promise.all([
+        db.getPromoPlanning(promoId),
+        // Toutes les assignations d'intervenants sur une fenêtre large (couvre toutes les promos)
+        db.getAssignationsPeriode('2024-01-01', '2030-12-31'),
+      ]);
+      setPlanning(p);
+      // Filtrer pour exclure les assignations de la promo en cours
+      setAssignationsAutres(autres.filter(a => a.promo_id !== promoId));
+    } catch (e) {
+      console.error(e); toast('Erreur de chargement du planning', 'error');
+    } finally {
+      setLoadingPlanning(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPlanningEtAssignations(promo?.id);
   }, [promo?.id]);
+
+  // Charger les dispos de la campagne actuelle
+  useEffect(() => {
+    if (!campagne) { setDisposIntervenants([]); return; }
+    db.getDisposCampagne(campagne.id)
+      .then(setDisposIntervenants)
+      .catch(e => console.error(e));
+  }, [campagne?.id]);
 
   // État édition d'un créneau (modale)
   const [editing, setEditing] = useState(null);
-  // {planningId, semaineNum, dateJour, periode, currentModuleId}
 
   // État semaines dépliées : seule la 1ère est dépliée par défaut
-  // (recalculé quand on change de promo)
   const [openSemaines, setOpenSemaines] = useState({});
   useEffect(() => {
-    // Quand on change de promo, ne déplier que la S01
     setOpenSemaines({ 1: true });
   }, [promo?.id]);
 
   const toggleSemaine = (num) => setOpenSemaines(s => ({ ...s, [num]: !s[num] }));
 
-  // Index des modules/catégories
+  // Index des modules/catégories/intervenants
   const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
   const categorieById = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
+  const intervenantById = useMemo(
+    () => Object.fromEntries((intervenants || []).map(i => [i.id, i])),
+    [intervenants]
+  );
+  const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
+
+  // Détecter les conflits d'un créneau du planning courant :
+  // un intervenant est en conflit s'il est aussi assigné à un créneau d'une autre
+  // promo sur la même date×période.
+  const conflitPour = (entry) => {
+    if (!entry || !entry.intervenant_id) return null;
+    const autresAffectations = assignationsAutres.filter(a =>
+      a.intervenant_id === entry.intervenant_id &&
+      a.date_jour === entry.date_jour &&
+      a.periode === entry.periode
+    );
+    if (autresAffectations.length === 0) return null;
+    // Récupérer les noms des promos en conflit
+    const promosEnConflit = autresAffectations
+      .map(a => promoById[a.promo_id]?.label)
+      .filter(Boolean);
+    return promosEnConflit;
+  };
 
   // Helpers
   const findPlanningEntry = (semaineNum, dateJour, periode) =>
@@ -110,28 +155,45 @@ const PagePlanning = ({ data, onReload }) => {
     return { remplis, total, topCats };
   };
 
-  // Sauvegarde locale (sur la promo, pas sur le programme-type)
   // Sauvegarde locale : update si entry existante, création si nouvelle case
-  const saveModule = async (moduleId) => {
+  // Garde editing ouvert pour permettre d'enchaîner module → intervenant
+  const saveModule = async (moduleId, keepOpen = false) => {
     if (!editing) return;
     try {
+      let newPlanningId = editing.planningId;
       if (editing.planningId) {
         // Entry existante → update
         await db.setPromoPlanningModule(editing.planningId, moduleId);
       } else if (moduleId) {
         // Pas d'entry et on assigne un module → création
-        await db.addPromoPlanningEntry(
+        const created = await db.addPromoPlanningEntry(
           promo.id, editing.semaineNum, editing.dateJour, editing.periode, moduleId
         );
+        newPlanningId = created.id;
       } else {
-        // Pas d'entry et pas de module → rien à faire
-        setEditing(null);
-        return;
+        setEditing(null); return;
       }
-      toast('Planning mis à jour', 'success');
-      const fresh = await db.getPromoPlanning(promo.id);
-      setPlanning(fresh);
-      setEditing(null);
+      toast('Module enregistré', 'success');
+      await loadPlanningEtAssignations(promo.id);
+      // Si on enchaîne (UX intervenant), on reste sur la modale en MAJ l'editing
+      if (keepOpen) {
+        setEditing(prev => prev ? { ...prev, planningId: newPlanningId, currentModuleId: moduleId } : prev);
+      } else {
+        setEditing(null);
+      }
+    } catch (e) {
+      console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
+  // Assigner un intervenant à un créneau
+  const saveIntervenant = async (intervenantId) => {
+    if (!editing || !editing.planningId) return;
+    try {
+      await db.setPromoPlanningIntervenant(editing.planningId, intervenantId);
+      toast(intervenantId ? 'Intervenant assigné' : 'Intervenant retiré', 'success');
+      await loadPlanningEtAssignations(promo.id);
+      setEditing(prev => prev ? { ...prev, currentIntervenantId: intervenantId } : prev);
     } catch (e) {
       console.error(e); toast(e.message || 'Erreur', 'error');
     }
@@ -190,6 +252,9 @@ const PagePlanning = ({ data, onReload }) => {
       }
       const fresh = await db.getPromoPlanning(promo.id);
       setPlanning(fresh);
+      // Recharger aussi les assignations (pour les conflits)
+      const autres = await db.getAssignationsPeriode('2024-01-01', '2030-12-31');
+      setAssignationsAutres(autres.filter(a => a.promo_id !== promo.id));
     } catch (err) {
       console.error(err);
       toast(err.message || 'Erreur de déplacement', 'error');
@@ -224,19 +289,29 @@ const PagePlanning = ({ data, onReload }) => {
                 ))}
               </select>
             </div>
-            {promo && (
-              <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                <div className="text-xs text-muted">
-                  {niveau && <span className={'chip ' + niveau.couleur} style={{ marginRight: 8 }}>{niveau.label}</span>}
-                  {promo.date_debut && new Date(promo.date_debut + 'T00:00:00').toLocaleDateString('fr-FR')}
-                  {' → '}
-                  {promo.date_fin && new Date(promo.date_fin + 'T00:00:00').toLocaleDateString('fr-FR')}
+            {promo && (() => {
+              const creneauxAvecModule = planning.filter(p => p.module_id).length;
+              const creneauxAvecIntervenant = planning.filter(p => p.intervenant_id).length;
+              return (
+                <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+                  <div className="text-xs text-muted">
+                    {niveau && <span className={'chip ' + niveau.couleur} style={{ marginRight: 8 }}>{niveau.label}</span>}
+                    {promo.date_debut && new Date(promo.date_debut + 'T00:00:00').toLocaleDateString('fr-FR')}
+                    {' → '}
+                    {promo.date_fin && new Date(promo.date_fin + 'T00:00:00').toLocaleDateString('fr-FR')}
+                  </div>
+                  <div className="text-sm" style={{ fontFamily: 'Gopher Heavy', color: 'var(--navy)' }}>
+                    {semainesPresentes.length} semaines · {planning.length} créneaux
+                  </div>
+                  <div className="text-xs" style={{ marginTop: 4 }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Affectation : </span>
+                    <strong style={{ color: creneauxAvecIntervenant === creneauxAvecModule ? 'var(--success, #2a9d4e)' : 'var(--navy)' }}>
+                      {creneauxAvecIntervenant} / {creneauxAvecModule} intervenants
+                    </strong>
+                  </div>
                 </div>
-                <div className="text-sm" style={{ fontFamily: 'Gopher Heavy', color: 'var(--navy)' }}>
-                  {semainesPresentes.length} semaines · {planning.length} créneaux
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {loadingPlanning && <div className="text-muted text-sm" style={{ padding: 20 }}>Chargement…</div>}
@@ -364,6 +439,7 @@ const PagePlanning = ({ data, onReload }) => {
                                       dateJour,
                                       periode,
                                       currentModuleId: entry?.module_id || null,
+                                      currentIntervenantId: entry?.intervenant_id || null,
                                     })}
                                     title={info ? "Glisser pour déplacer, cliquer pour modifier" : "Cliquer pour assigner un module"}
                                     style={{
@@ -378,13 +454,35 @@ const PagePlanning = ({ data, onReload }) => {
                                       transition: 'background 0.1s, outline 0.1s',
                                     }}>
                                     {info ? (
-                                      <div style={{ overflow: 'hidden' }}>
+                                      <div style={{ overflow: 'hidden', width: '100%' }}>
                                         <div style={{ fontWeight: 600 }}>{info.module.label}</div>
                                         {info.categorie && (
                                           <div style={{ opacity: 0.7, fontSize: 10, marginTop: 2 }}>
                                             {info.categorie.label}
                                           </div>
                                         )}
+                                        {(() => {
+                                          const interv = entry.intervenant_id && intervenantById[entry.intervenant_id];
+                                          const conflits = conflitPour(entry);
+                                          if (interv) {
+                                            return (
+                                              <div style={{ marginTop: 6, paddingTop: 4, borderTop: '1px solid ' + info.couleur.border, fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                                <Icon name="user" size={10} />
+                                                <span style={{ fontWeight: 600 }}>{interv.prenom} {interv.nom}</span>
+                                                {conflits && (
+                                                  <span
+                                                    title={'⚠ Conflit : aussi sur ' + conflits.join(', ')}
+                                                    style={{ marginLeft: 'auto', color: '#d97706', fontWeight: 700 }}>⚠</span>
+                                                )}
+                                              </div>
+                                            );
+                                          }
+                                          return (
+                                            <div style={{ marginTop: 6, paddingTop: 4, borderTop: '1px solid ' + info.couleur.border, fontSize: 10, opacity: 0.55, fontStyle: 'italic' }}>
+                                              Aucun intervenant
+                                            </div>
+                                          );
+                                        })()}
                                       </div>
                                     ) : entry ? (
                                       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>+ Assigner un module</span>
@@ -409,13 +507,21 @@ const PagePlanning = ({ data, onReload }) => {
 
       {/* Modale d'édition (locale à la promo) */}
       {editing && (
-        <ModalChoixModulePlanning
+        <ModalEditeurCreneau
           editing={editing}
-          promoLabel={promo?.label}
+          promo={promo}
+          niveau={niveau}
           categories={categories}
           modules={modules}
-          onSave={saveModule}
-          onClear={() => saveModule(null)}
+          intervenants={intervenants || []}
+          disposIntervenants={disposIntervenants}
+          assignationsAutres={assignationsAutres}
+          promoById={promoById}
+          moduleById={moduleById}
+          categorieById={categorieById}
+          onSaveModule={saveModule}
+          onClearModule={() => saveModule(null, true)}
+          onSaveIntervenant={saveIntervenant}
           onClose={() => setEditing(null)}
         />
       )}
@@ -427,7 +533,128 @@ const PagePlanning = ({ data, onReload }) => {
 // MODALE — choix de module pour un créneau de promo
 // (locale à la promo, ne modifie PAS le programme-type)
 // ============================================================
-const ModalChoixModulePlanning = ({ editing, promoLabel, categories, modules, onSave, onClear, onClose }) => {
+const ModalEditeurCreneau = ({
+  editing, promo, niveau, categories, modules, intervenants,
+  disposIntervenants, assignationsAutres, promoById, moduleById, categorieById,
+  onSaveModule, onClearModule, onSaveIntervenant, onClose,
+}) => {
+  // Onglet actif (par défaut "module" si pas de module assigné, sinon "intervenant"
+  // pour aller plus vite à l'étape suivante)
+  const [activeTab, setActiveTab] = useState(editing.currentModuleId ? 'intervenant' : 'module');
+
+  // Formater la date du créneau
+  const d = new Date(editing.dateJour + 'T00:00:00');
+  const dateLabel = d.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const periodeLabel = editing.periode === 'am' ? 'matin' : 'après-midi';
+
+  // Module actuel et catégorie associée
+  const currentModule = editing.currentModuleId ? moduleById[editing.currentModuleId] : null;
+  const currentCategorie = currentModule ? categorieById[currentModule.categorie_id] : null;
+  const currentIntervenant = editing.currentIntervenantId
+    ? intervenants.find(i => i.id === editing.currentIntervenantId)
+    : null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: 720, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-head">
+          <div>
+            <h3 style={{ marginBottom: 4 }}>S{String(editing.semaineNum).padStart(2, '0')} · {dateLabel} {periodeLabel}</h3>
+            <div className="text-xs text-muted">
+              ⓘ Cette modification ne concerne que <strong>{promo?.label}</strong>.
+            </div>
+          </div>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        {/* Récap module + intervenant actuels */}
+        <div style={{ background: 'var(--bg-alt)', padding: 10, borderRadius: 6, marginBottom: 12, display: 'flex', gap: 16, fontSize: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Module</div>
+            {currentModule ? (
+              <div style={{ fontWeight: 600, color: 'var(--navy)' }}>
+                {currentModule.label}
+                {currentCategorie && (
+                  <span style={{ opacity: 0.7, fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+                    · {currentCategorie.label}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>Aucun module</div>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Intervenant</div>
+            {currentIntervenant ? (
+              <div style={{ fontWeight: 600, color: 'var(--navy)' }}>
+                {currentIntervenant.prenom} {currentIntervenant.nom}
+              </div>
+            ) : (
+              <div style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>Non assigné</div>
+            )}
+          </div>
+        </div>
+
+        {/* Onglets */}
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 12 }}>
+          {[
+            { id: 'module', label: 'Module' },
+            { id: 'intervenant', label: 'Intervenant', disabled: !editing.planningId && !editing.currentModuleId },
+          ].map(t => {
+            const isActive = activeTab === t.id;
+            const isDisabled = t.disabled;
+            return (
+              <div key={t.id}
+                onClick={() => !isDisabled && setActiveTab(t.id)}
+                style={{
+                  padding: '8px 16px',
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
+                  fontWeight: isActive ? 700 : 500,
+                  color: isDisabled ? 'var(--text-muted)' : (isActive ? 'var(--navy)' : 'var(--text-muted)'),
+                  borderBottom: isActive ? '3px solid var(--cyan)' : '3px solid transparent',
+                  opacity: isDisabled ? 0.4 : 1,
+                  fontSize: 13,
+                }}
+                title={isDisabled ? "Assigne d'abord un module" : ''}>
+                {t.label}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Contenu de l'onglet */}
+        {activeTab === 'module' ? (
+          <OngletModule
+            editing={editing}
+            categories={categories}
+            modules={modules}
+            onSaveModule={onSaveModule}
+            onClearModule={onClearModule}
+            onClose={onClose}
+          />
+        ) : (
+          <OngletIntervenant
+            editing={editing}
+            promo={promo}
+            niveau={niveau}
+            currentCategorie={currentCategorie}
+            intervenants={intervenants}
+            disposIntervenants={disposIntervenants}
+            assignationsAutres={assignationsAutres}
+            promoById={promoById}
+            onSaveIntervenant={onSaveIntervenant}
+            onClose={onClose}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Onglet "Module" ───────────────────────────────────────────────────
+const OngletModule = ({ editing, categories, modules, onSaveModule, onClearModule, onClose }) => {
   const [search, setSearch] = useState('');
   const [selectedCatId, setSelectedCatId] = useState('all');
 
@@ -449,83 +676,230 @@ const ModalChoixModulePlanning = ({ editing, promoLabel, categories, modules, on
     return map;
   }, [filtered, categories]);
 
-  // Formater la date du créneau
-  const d = new Date(editing.dateJour + 'T00:00:00');
-  const dateLabel = d.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-  const periodeLabel = editing.periode === 'am' ? 'matin' : 'après-midi';
+  return (
+    <>
+      <div className="flex gap-8 mb-16">
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input type="search" placeholder="Rechercher un module…" value={search}
+            autoFocus onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
+          <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+            <Icon name="search" size={14} />
+          </div>
+        </div>
+        <select value={selectedCatId} onChange={e => setSelectedCatId(e.target.value)}>
+          <option value="all">Toutes les catégories</option>
+          {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+        </select>
+      </div>
+
+      <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6 }}>
+        {Object.keys(grouped).length === 0 ? (
+          <div className="text-muted text-sm" style={{ padding: 24, textAlign: 'center' }}>
+            Aucun module ne correspond.
+          </div>
+        ) : Object.entries(grouped).map(([catLabel, mods]) => {
+          const col = couleurCat(catLabel);
+          return (
+            <div key={catLabel}>
+              <div style={{ padding: '6px 12px', background: col.bg, color: col.fg, fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                {catLabel}
+              </div>
+              {mods.map(m => {
+                const isCurrent = m.id === editing.currentModuleId;
+                return (
+                  <div key={m.id}
+                    onClick={() => onSaveModule(m.id, true)}
+                    style={{
+                      padding: '8px 14px', cursor: 'pointer',
+                      background: isCurrent ? 'var(--cyan-light)' : '#fff',
+                      borderBottom: '1px solid var(--bg-alt)',
+                      fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}
+                    onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.background = 'var(--bg-alt)'; }}
+                    onMouseLeave={e => { if (!isCurrent) e.currentTarget.style.background = '#fff'; }}>
+                    <span>{m.label}</span>
+                    {isCurrent && <Icon name="check" size={14} />}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="modal-foot">
+        {editing.currentModuleId && (
+          <button className="btn btn-ghost" onClick={onClearModule} style={{ color: 'var(--danger)' }}>
+            <Icon name="x" size={12} /> Retirer le module
+          </button>
+        )}
+        <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Fermer</button>
+      </div>
+    </>
+  );
+};
+
+// ─── Onglet "Intervenant" avec algorithme de suggestion ─────────────────
+const OngletIntervenant = ({
+  editing, promo, niveau, currentCategorie, intervenants,
+  disposIntervenants, assignationsAutres, promoById,
+  onSaveIntervenant, onClose,
+}) => {
+  const [search, setSearch] = useState('');
+  const [filterNonQualifies, setFilterNonQualifies] = useState(true);
+
+  // ─── Calculer pour chaque intervenant son score et son statut ──────────
+  // Critères :
+  //   • Niveau OK ?    (qualifié pour le niveau de la promo)
+  //   • Qualif module : note sur la catégorie du module (0..5, null si pas de note)
+  //   • Dispo          : déclarée dispo ce jour×période sur la campagne courante
+  //   • Conflit        : déjà assigné ailleurs sur cette date×période
+  //
+  // Score = combinaison de ces critères (priorité aux dispos qualifiés sans conflit)
+  const candidats = useMemo(() => {
+    return intervenants.map(i => {
+      const niveauOk = niveau ? (i.niveaux || []).includes(niveau.id) : true;
+      const note = currentCategorie ? (i.ratings?.[currentCategorie.id] || null) : null;
+      const qualifieModule = !!note;
+      // Disponibilité : la table dispos contient les dispos déclarées
+      // dispo.date_jour === editing.dateJour et dispo.periode === editing.periode
+      const dispoRecord = disposIntervenants.find(d =>
+        d.intervenant_id === i.id && d.date === editing.dateJour && d.periode === editing.periode
+      );
+      const dispoStatut = dispoRecord ? 'dispo' : 'inconnu';
+      // Conflit ?
+      const conflitsListe = assignationsAutres.filter(a =>
+        a.intervenant_id === i.id && a.date_jour === editing.dateJour && a.periode === editing.periode
+      ).map(a => promoById[a.promo_id]?.label).filter(Boolean);
+      const hasConflit = conflitsListe.length > 0;
+
+      // Score (plus haut = meilleur)
+      let score = 0;
+      if (niveauOk) score += 1000;
+      if (qualifieModule) score += 100 + (note * 20); // note 5 → +200, note 1 → +120
+      if (dispoStatut === 'dispo') score += 500;
+      if (hasConflit) score -= 100; // pénalité de conflit (pas exclusion, juste warning)
+
+      return {
+        intervenant: i,
+        niveauOk, note, qualifieModule,
+        dispoStatut, hasConflit, conflitsListe,
+        score,
+      };
+    }).sort((a, b) => b.score - a.score);
+  }, [intervenants, niveau, currentCategorie, disposIntervenants, assignationsAutres, editing.dateJour, editing.periode, promoById]);
+
+  // Filtre recherche + filtre "non qualifiés"
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return candidats.filter(c => {
+      const i = c.intervenant;
+      const matchSearch = !q || `${i.prenom} ${i.nom}`.toLowerCase().includes(q);
+      const matchQualif = filterNonQualifies ? c.niveauOk : true;
+      return matchSearch && matchQualif;
+    });
+  }, [candidats, search, filterNonQualifies]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}
-        style={{ maxWidth: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
-        <div className="modal-head">
-          <div>
-            <h3 style={{ marginBottom: 4 }}>S{String(editing.semaineNum).padStart(2, '0')} · {dateLabel} {periodeLabel}</h3>
-            <div className="text-xs text-muted">
-              ⓘ Cette modification ne concerne que <strong>{promoLabel}</strong> — le programme-type reste inchangé.
-            </div>
+    <>
+      <div className="flex gap-8 mb-16">
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input type="search" placeholder="Rechercher un intervenant…" value={search}
+            autoFocus onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
+          <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+            <Icon name="search" size={14} />
           </div>
-          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
         </div>
-
-        <div className="flex gap-8 mb-16">
-          <div style={{ position: 'relative', flex: 1 }}>
-            <input type="search" placeholder="Rechercher un module…" value={search}
-              autoFocus onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
-            <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
-              <Icon name="search" size={14} />
-            </div>
-          </div>
-          <select value={selectedCatId} onChange={e => setSelectedCatId(e.target.value)}>
-            <option value="all">Toutes les catégories</option>
-            {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-          </select>
-        </div>
-
-        <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6 }}>
-          {Object.keys(grouped).length === 0 ? (
-            <div className="text-muted text-sm" style={{ padding: 24, textAlign: 'center' }}>
-              Aucun module ne correspond.
-            </div>
-          ) : Object.entries(grouped).map(([catLabel, mods]) => {
-            const col = couleurCat(catLabel);
-            return (
-              <div key={catLabel}>
-                <div style={{ padding: '6px 12px', background: col.bg, color: col.fg, fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' }}>
-                  {catLabel}
-                </div>
-                {mods.map(m => {
-                  const isCurrent = m.id === editing.currentModuleId;
-                  return (
-                    <div key={m.id}
-                      onClick={() => onSave(m.id)}
-                      style={{
-                        padding: '8px 14px', cursor: 'pointer',
-                        background: isCurrent ? 'var(--cyan-light)' : '#fff',
-                        borderBottom: '1px solid var(--bg-alt)',
-                        fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      }}
-                      onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.background = 'var(--bg-alt)'; }}
-                      onMouseLeave={e => { if (!isCurrent) e.currentTarget.style.background = '#fff'; }}>
-                      <span>{m.label}</span>
-                      {isCurrent && <Icon name="check" size={14} />}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="modal-foot">
-          {editing.currentModuleId && (
-            <button className="btn btn-ghost" onClick={onClear} style={{ color: 'var(--danger)' }}>
-              <Icon name="x" size={12} /> Retirer le module
-            </button>
-          )}
-          <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Annuler</button>
-        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+          <input type="checkbox" checked={filterNonQualifies}
+            onChange={e => setFilterNonQualifies(e.target.checked)} />
+          <span>Masquer les non qualifiés pour le niveau</span>
+        </label>
       </div>
-    </div>
+
+      {!currentCategorie && (
+        <div style={{ padding: 10, background: '#fff8e5', borderRadius: 6, marginBottom: 12, fontSize: 12, color: '#856404' }}>
+          ⓘ Aucun module assigné : les intervenants ne sont pas classés par qualification de catégorie.
+        </div>
+      )}
+
+      <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6 }}>
+        {filtered.length === 0 ? (
+          <div className="text-muted text-sm" style={{ padding: 24, textAlign: 'center' }}>
+            Aucun intervenant ne correspond.
+          </div>
+        ) : filtered.map(c => {
+          const i = c.intervenant;
+          const isCurrent = i.id === editing.currentIntervenantId;
+          return (
+            <div key={i.id}
+              onClick={() => onSaveIntervenant(i.id)}
+              style={{
+                padding: '10px 14px', cursor: 'pointer',
+                background: isCurrent ? 'var(--cyan-light)' : '#fff',
+                borderBottom: '1px solid var(--bg-alt)',
+                fontSize: 13, display: 'flex', alignItems: 'center', gap: 10,
+              }}
+              onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.background = 'var(--bg-alt)'; }}
+              onMouseLeave={e => { if (!isCurrent) e.currentTarget.style.background = '#fff'; }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, color: 'var(--navy)' }}>
+                  {i.prenom} {i.nom}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  {i.ville && <span>{i.ville}</span>}
+                  {i.taux_horaire && <span> · {i.taux_horaire}€/h</span>}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {/* Note sur la catégorie */}
+                {currentCategorie && (
+                  c.note ? (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e8f4ea', color: '#1f6c33', fontWeight: 600 }}>
+                      ★ {c.note}/5
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#f0f0f3', color: '#888', fontStyle: 'italic' }}>
+                      pas noté
+                    </span>
+                  )
+                )}
+                {/* Niveau */}
+                {!c.niveauOk && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#ffe4e4', color: '#a83333', fontWeight: 600 }}
+                    title={`Pas qualifié pour le niveau ${niveau?.label}`}>
+                    ✗ niveau
+                  </span>
+                )}
+                {/* Dispo */}
+                {c.dispoStatut === 'dispo' && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e3f1ff', color: '#1a5490', fontWeight: 600 }}
+                    title="Déclaré disponible sur cette demi-journée">
+                    ✓ dispo
+                  </span>
+                )}
+                {/* Conflit */}
+                {c.hasConflit && (
+                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fff3cd', color: '#856404', fontWeight: 600 }}
+                    title={'⚠ Déjà assigné : ' + c.conflitsListe.join(', ')}>
+                    ⚠ conflit
+                  </span>
+                )}
+                {isCurrent && <Icon name="check" size={14} />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="modal-foot">
+        {editing.currentIntervenantId && (
+          <button className="btn btn-ghost" onClick={() => onSaveIntervenant(null)} style={{ color: 'var(--danger)' }}>
+            <Icon name="x" size={12} /> Retirer l'intervenant
+          </button>
+        )}
+        <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Fermer</button>
+      </div>
+    </>
   );
 };

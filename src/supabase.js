@@ -380,6 +380,41 @@ window.db = {
     return data;
   },
 
+  // Assigner un intervenant à un créneau (ou retirer si null)
+  async setPromoPlanningIntervenant(planningId, intervenantId) {
+    const { error } = await _client
+      .from('promo_planning')
+      .update({ intervenant_id: intervenantId })
+      .eq('id', planningId);
+    if (error) throw error;
+  },
+
+  // Récupérer toutes les assignations d'un intervenant à une date/période donnée
+  // (utilisé pour détecter les conflits entre promos)
+  async getAssignationsIntervenant(intervenantId, dateJour, periode) {
+    const { data, error } = await _client
+      .from('promo_planning')
+      .select('id, promo_id, semaine_num, date_jour, periode, module_id')
+      .eq('intervenant_id', intervenantId)
+      .eq('date_jour', dateJour)
+      .eq('periode', periode);
+    if (error) throw error;
+    return data || [];
+  },
+
+  // Pour une période donnée, retourner tous les créneaux qui ont un intervenant
+  // assigné. Utilisé pour détecter en bloc les conflits sur l'écran Planning.
+  async getAssignationsPeriode(dateDebut, dateFin) {
+    const { data, error } = await _client
+      .from('promo_planning')
+      .select('id, promo_id, intervenant_id, date_jour, periode')
+      .gte('date_jour', dateDebut)
+      .lte('date_jour', dateFin)
+      .not('intervenant_id', 'is', null);
+    if (error) throw error;
+    return data || [];
+  },
+
   // Déduire les semaines d'une promo depuis son planning (= dates uniques des lundis)
   async getPromoSemaines(promoId) {
     const planning = await this.getPromoPlanning(promoId);

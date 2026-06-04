@@ -84,11 +84,11 @@ const PagePlanning = ({ data, onReload }) => {
     const map = {};
     for (const p of planning) {
       if (map[p.semaine_num]) continue;
-      // Calculer le lundi de la semaine de p.date_jour
+      // Calculer le lundi de la semaine de p.date_jour (heure locale)
       const d = new Date(p.date_jour + 'T00:00:00');
       const dow = d.getDay() === 0 ? 7 : d.getDay();
       const lundi = new Date(d.getTime() - (dow - 1) * 86400000);
-      map[p.semaine_num] = lundi.toISOString().slice(0, 10);
+      map[p.semaine_num] = isoDate(lundi);
     }
     return map;
   }, [planning]);
@@ -249,7 +249,7 @@ const PagePlanning = ({ data, onReload }) => {
                               {periode === 'am' ? 'MATIN' : 'APRÈS-MIDI'}
                             </td>
                             {[0, 1, 2, 3, 4].map(jourIdx => {
-                              const dateJour = lundiD ? new Date(lundiD.getTime() + jourIdx * 86400000).toISOString().slice(0, 10) : null;
+                              const dateJour = lundiD ? isoDate(new Date(lundiD.getTime() + jourIdx * 86400000)) : null;
                               const entry = dateJour ? findPlanningEntry(num, dateJour, periode) : null;
                               const info = entry ? moduleInfo(entry.module_id) : null;
                               const style = info ? {
@@ -275,6 +275,7 @@ const PagePlanning = ({ data, onReload }) => {
                                         currentModuleId: entry.module_id,
                                       });
                                     }}
+                                    title={!entry ? "Pas de cours prévu ce créneau (jour férié, début/fin de promo, ou semaine tronquée)" : ""}
                                     style={{
                                       ...style,
                                       padding: '8px 10px', borderRadius: 6, cursor: clickable ? 'pointer' : 'default',
@@ -294,7 +295,7 @@ const PagePlanning = ({ data, onReload }) => {
                                     ) : entry ? (
                                       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>+ Assigner un module</span>
                                     ) : (
-                                      <span style={{ fontStyle: 'italic', opacity: 0.4 }}>— Hors créneau</span>
+                                      <span style={{ fontStyle: 'italic', opacity: 0.4 }}>— Pas de cours</span>
                                     )}
                                   </div>
                                 </td>

@@ -439,8 +439,6 @@ const MiniMois = ({ mois, semainesSelectees, onToggle }) => {
   // Filtrer : garder une semaine si elle contient au moins 1 jour du mois courant
   const semainesAffichees = semaines.filter(sem => sem.some(d => d.getMonth() === month));
 
-  const isoString = (d) => d.toISOString().slice(0, 10);
-
   const today = new Date();
 
   return (
@@ -459,7 +457,7 @@ const MiniMois = ({ mois, semainesSelectees, onToggle }) => {
         <tbody>
           {semainesAffichees.map((sem, sIdx) => {
             const lundi = sem[0];
-            const lundiISO = isoString(lundi);
+            const lundiISO = isoDate(lundi);
             const isSelected = semainesSelectees.includes(lundiISO);
             return (
               <tr key={sIdx}

@@ -88,6 +88,57 @@ const PagePlanning = ({ data, onReload }) => {
   );
   const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
 
+  // ─── Sélection multiple pour affectation bulk ─────────────────────────
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedPlanningIds, setSelectedPlanningIds] = useState(new Set());
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+
+  // Réinitialiser la sélection si on change de promo
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedPlanningIds(new Set());
+    setBulkModalOpen(false);
+  }, [promo?.id]);
+
+  const toggleCellSelection = (planningId) => {
+    if (!planningId) return; // on ne peut pas sélectionner une case sans entry
+    setSelectedPlanningIds(prev => {
+      const next = new Set(prev);
+      if (next.has(planningId)) next.delete(planningId);
+      else next.add(planningId);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedPlanningIds(new Set());
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedPlanningIds(new Set());
+  };
+
+  // Assignation en masse : applique le même intervenant à tous les créneaux sélectionnés
+  const bulkAssignIntervenant = async (intervenantId) => {
+    try {
+      const ids = [...selectedPlanningIds];
+      // Assignations en parallèle (Supabase gère les opérations concurrentes)
+      await Promise.all(
+        ids.map(pid => db.setPromoPlanningIntervenant(pid, intervenantId))
+      );
+      toast(
+        intervenantId
+          ? `${ids.length} créneau${ids.length > 1 ? 'x' : ''} affecté${ids.length > 1 ? 's' : ''}`
+          : `Intervenant retiré sur ${ids.length} créneau${ids.length > 1 ? 'x' : ''}`,
+        'success'
+      );
+      await loadPlanningEtAssignations(promo.id);
+      setBulkModalOpen(false);
+      exitSelectionMode();
+    } catch (e) {
+      console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
   // Détecter les conflits d'un créneau du planning courant :
   // un intervenant est en conflit s'il est aussi assigné à un créneau d'une autre
   // promo sur la même date×période.
@@ -309,10 +360,22 @@ const PagePlanning = ({ data, onReload }) => {
                       {creneauxAvecIntervenant} / {creneauxAvecModule} intervenants
                     </strong>
                   </div>
+                  <button
+                    className={selectionMode ? 'btn btn-primary' : 'btn btn-ghost'}
+                    onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+                    style={{ marginTop: 8, fontSize: 11, padding: '6px 12px' }}>
+                    {selectionMode ? '✗ Quitter la sélection' : '☑ Sélection multiple'}
+                  </button>
                 </div>
               );
             })()}
           </div>
+          {selectionMode && (
+            <div style={{ background: 'var(--cyan-light)', border: '1px solid var(--cyan)', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: 'var(--navy)' }}>
+              <strong>Mode sélection actif :</strong> cliquez sur les cases avec module pour les ajouter à la sélection.
+              La barre en bas vous permettra ensuite de tous les affecter à un même intervenant.
+            </div>
+          )}
 
           {loadingPlanning && <div className="text-muted text-sm" style={{ padding: 20 }}>Chargement…</div>}
 
@@ -423,36 +486,65 @@ const PagePlanning = ({ data, onReload }) => {
                                 background: 'var(--cyan-light)',
                               } : {};
                               const sourceStyle = isDragSource ? { opacity: 0.35 } : {};
-                              const draggable = !!(entry && info);
+                              // En mode sélection : seules les cases avec module sont sélectionnables
+                              const isSelectable = selectionMode && !!(entry && info);
+                              const isSelected = selectionMode && entry && selectedPlanningIds.has(entry.id);
+                              const selectStyle = isSelected ? {
+                                outline: '3px solid var(--cyan)',
+                                outlineOffset: -2,
+                              } : (selectionMode && !isSelectable ? { opacity: 0.4 } : {});
+                              const draggable = !!(entry && info) && !selectionMode;
                               return (
-                                <td key={jourIdx} style={{ padding: 0 }}>
+                                <td key={jourIdx} style={{ padding: 0, position: 'relative' }}>
                                   <div
                                     draggable={draggable}
-                                    onDragStart={(e) => onDragStart(e, cellInfo)}
-                                    onDragEnd={onDragEnd}
-                                    onDragOver={(e) => onDragOver(e, cellKey)}
-                                    onDragLeave={onDragLeave}
-                                    onDrop={(e) => onDrop(e, cellInfo)}
-                                    onClick={() => setEditing({
-                                      planningId: entry?.id || null,
-                                      semaineNum: num,
-                                      dateJour,
-                                      periode,
-                                      currentModuleId: entry?.module_id || null,
-                                      currentIntervenantId: entry?.intervenant_id || null,
-                                    })}
-                                    title={info ? "Glisser pour déplacer, cliquer pour modifier" : "Cliquer pour assigner un module"}
+                                    onDragStart={selectionMode ? undefined : (e) => onDragStart(e, cellInfo)}
+                                    onDragEnd={selectionMode ? undefined : onDragEnd}
+                                    onDragOver={selectionMode ? undefined : (e) => onDragOver(e, cellKey)}
+                                    onDragLeave={selectionMode ? undefined : onDragLeave}
+                                    onDrop={selectionMode ? undefined : (e) => onDrop(e, cellInfo)}
+                                    onClick={() => {
+                                      if (selectionMode) {
+                                        if (isSelectable) toggleCellSelection(entry.id);
+                                        return;
+                                      }
+                                      setEditing({
+                                        planningId: entry?.id || null,
+                                        semaineNum: num,
+                                        dateJour,
+                                        periode,
+                                        currentModuleId: entry?.module_id || null,
+                                        currentIntervenantId: entry?.intervenant_id || null,
+                                      });
+                                    }}
+                                    title={selectionMode
+                                      ? (isSelectable ? 'Cliquer pour (dé)sélectionner' : 'Pas de module : non sélectionnable')
+                                      : (info ? 'Glisser pour déplacer, cliquer pour modifier' : 'Cliquer pour assigner un module')}
                                     style={{
                                       ...baseStyle,
                                       ...hoverStyle,
                                       ...sourceStyle,
+                                      ...selectStyle,
                                       padding: '8px 10px', borderRadius: 6,
-                                      cursor: draggable ? 'grab' : 'pointer',
+                                      cursor: selectionMode ? (isSelectable ? 'pointer' : 'not-allowed') : (draggable ? 'grab' : 'pointer'),
                                       fontSize: 11, fontWeight: 500, minHeight: 44,
                                       display: 'flex', alignItems: 'center', lineHeight: 1.3,
-                                      opacity: isDragSource ? 0.35 : (info ? 1 : 0.6),
+                                      opacity: isDragSource ? 0.35 : (selectionMode && !isSelectable ? 0.4 : (info ? 1 : 0.6)),
                                       transition: 'background 0.1s, outline 0.1s',
                                     }}>
+                                    {/* Indicateur de sélection */}
+                                    {selectionMode && isSelectable && (
+                                      <div style={{
+                                        position: 'absolute', top: 4, right: 4,
+                                        width: 16, height: 16, borderRadius: 4,
+                                        border: '2px solid var(--cyan)',
+                                        background: isSelected ? 'var(--cyan)' : '#fff',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        color: '#fff', fontSize: 10, fontWeight: 700,
+                                      }}>
+                                        {isSelected ? '✓' : ''}
+                                      </div>
+                                    )}
                                     {info ? (
                                       <div style={{ overflow: 'hidden', width: '100%' }}>
                                         <div style={{ fontWeight: 600 }}>{info.module.label}</div>
@@ -523,6 +615,52 @@ const PagePlanning = ({ data, onReload }) => {
           onClearModule={() => saveModule(null, true)}
           onSaveIntervenant={saveIntervenant}
           onClose={() => setEditing(null)}
+        />
+      )}
+
+      {/* Barre sticky en bas — mode sélection multiple */}
+      {selectionMode && selectedPlanningIds.size > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0,
+          background: 'var(--navy)', color: '#fff',
+          padding: '14px 24px',
+          display: 'flex', alignItems: 'center', gap: 16,
+          boxShadow: '0 -4px 16px rgba(0,0,0,0.15)',
+          zIndex: 50,
+        }}>
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 16 }}>
+              {selectedPlanningIds.size} créneau{selectedPlanningIds.size > 1 ? 'x' : ''} sélectionné{selectedPlanningIds.size > 1 ? 's' : ''}
+            </strong>
+            <span style={{ marginLeft: 12, opacity: 0.8, fontSize: 12 }}>
+              Tous seront affectés au même intervenant
+            </span>
+          </div>
+          <button className="btn btn-ghost" onClick={clearSelection}
+            style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }}>
+            Tout désélectionner
+          </button>
+          <button className="btn btn-primary" onClick={() => setBulkModalOpen(true)}>
+            <Icon name="user" size={14} /> Assigner un intervenant
+          </button>
+        </div>
+      )}
+
+      {/* Modale d'affectation en masse */}
+      {bulkModalOpen && (
+        <ModalAffectationBulk
+          selectedPlanningIds={[...selectedPlanningIds]}
+          planning={planning}
+          promo={promo}
+          niveau={niveau}
+          intervenants={intervenants || []}
+          disposIntervenants={disposIntervenants}
+          assignationsAutres={assignationsAutres}
+          promoById={promoById}
+          moduleById={moduleById}
+          categorieById={categorieById}
+          onAssign={bulkAssignIntervenant}
+          onClose={() => setBulkModalOpen(false)}
         />
       )}
     </div>
@@ -901,5 +1039,196 @@ const OngletIntervenant = ({
         <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Fermer</button>
       </div>
     </>
+  );
+};
+
+// ============================================================
+// MODALE — affectation en masse d'un intervenant à plusieurs créneaux
+// ============================================================
+const ModalAffectationBulk = ({
+  selectedPlanningIds, planning, promo, niveau, intervenants,
+  disposIntervenants, assignationsAutres, promoById, moduleById, categorieById,
+  onAssign, onClose,
+}) => {
+  const [search, setSearch] = useState('');
+  const [filterNonQualifies, setFilterNonQualifies] = useState(true);
+
+  // Récupérer les entries sélectionnées avec leurs détails
+  const selectedEntries = useMemo(() => {
+    return selectedPlanningIds
+      .map(pid => planning.find(p => p.id === pid))
+      .filter(Boolean);
+  }, [selectedPlanningIds, planning]);
+
+  // Catégories distinctes couvertes par les modules sélectionnés
+  // (utilisé pour calculer la note moyenne d'un intervenant)
+  const categoriesIds = useMemo(() => {
+    const set = new Set();
+    selectedEntries.forEach(e => {
+      const mod = moduleById[e.module_id];
+      if (mod) set.add(mod.categorie_id);
+    });
+    return [...set];
+  }, [selectedEntries, moduleById]);
+
+  // Calculer le scoring "agrégé" pour chaque intervenant
+  const candidats = useMemo(() => {
+    const N = selectedEntries.length;
+    return intervenants.map(i => {
+      const niveauOk = niveau ? (i.niveaux || []).includes(niveau.id) : true;
+      // Note moyenne sur les catégories couvertes (si l'intervenant a une note sur chacune)
+      const notes = categoriesIds
+        .map(cid => i.ratings?.[cid])
+        .filter(n => typeof n === 'number');
+      const noteMoyenne = notes.length > 0 ? (notes.reduce((s, n) => s + n, 0) / notes.length) : null;
+      const qualifMoy = notes.length / (categoriesIds.length || 1); // 0..1 : couverture des catégories
+      // Combien de créneaux où il est dispo / en conflit
+      let nbDispos = 0;
+      let nbConflits = 0;
+      const conflitsPromos = new Set();
+      selectedEntries.forEach(e => {
+        const dispoFound = disposIntervenants.find(d =>
+          d.intervenant_id === i.id && d.date === e.date_jour && d.periode === e.periode
+        );
+        if (dispoFound) nbDispos++;
+        const conflits = assignationsAutres.filter(a =>
+          a.intervenant_id === i.id && a.date_jour === e.date_jour && a.periode === e.periode
+        );
+        if (conflits.length > 0) {
+          nbConflits++;
+          conflits.forEach(c => {
+            const promoLabel = promoById[c.promo_id]?.label;
+            if (promoLabel) conflitsPromos.add(promoLabel);
+          });
+        }
+      });
+      // Scoring agrégé
+      let score = 0;
+      if (niveauOk) score += 1000;
+      if (noteMoyenne) score += 100 + (noteMoyenne * 20);
+      score += qualifMoy * 50; // couverture des catégories
+      score += (nbDispos / Math.max(N, 1)) * 500;
+      score -= (nbConflits / Math.max(N, 1)) * 200;
+      return {
+        intervenant: i,
+        niveauOk, noteMoyenne, nbNotes: notes.length, totalCategories: categoriesIds.length,
+        nbDispos, nbConflits, conflitsPromos: [...conflitsPromos],
+        score, N,
+      };
+    }).sort((a, b) => b.score - a.score);
+  }, [intervenants, niveau, categoriesIds, disposIntervenants, assignationsAutres, selectedEntries, promoById]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return candidats.filter(c => {
+      const i = c.intervenant;
+      const matchSearch = !q || `${i.prenom} ${i.nom}`.toLowerCase().includes(q);
+      const matchQualif = filterNonQualifies ? c.niveauOk : true;
+      return matchSearch && matchQualif;
+    });
+  }, [candidats, search, filterNonQualifies]);
+
+  const N = selectedEntries.length;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: 780, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-head">
+          <div>
+            <h3 style={{ marginBottom: 4 }}>
+              Affecter un intervenant à {N} créneau{N > 1 ? 'x' : ''}
+            </h3>
+            <div className="text-xs text-muted">
+              ⓘ Promo <strong>{promo?.label}</strong>. Les suggestions tiennent compte de la qualification, de la disponibilité et des conflits sur l'ensemble des créneaux sélectionnés.
+            </div>
+          </div>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        <div className="flex gap-8 mb-16">
+          <div style={{ position: 'relative', flex: 1 }}>
+            <input type="search" placeholder="Rechercher un intervenant…" value={search}
+              autoFocus onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
+            <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+              <Icon name="search" size={14} />
+            </div>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input type="checkbox" checked={filterNonQualifies}
+              onChange={e => setFilterNonQualifies(e.target.checked)} />
+            <span>Masquer les non qualifiés</span>
+          </label>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6 }}>
+          {filtered.length === 0 ? (
+            <div className="text-muted text-sm" style={{ padding: 24, textAlign: 'center' }}>
+              Aucun intervenant ne correspond.
+            </div>
+          ) : filtered.map(c => {
+            const i = c.intervenant;
+            return (
+              <div key={i.id}
+                onClick={() => onAssign(i.id)}
+                style={{
+                  padding: '10px 14px', cursor: 'pointer', background: '#fff',
+                  borderBottom: '1px solid var(--bg-alt)',
+                  fontSize: 13, display: 'flex', alignItems: 'center', gap: 10,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-alt)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: 'var(--navy)' }}>
+                    {i.prenom} {i.nom}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {i.ville && <span>{i.ville}</span>}
+                    {i.taux_horaire && <span> · {i.taux_horaire}€/h</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {/* Note moyenne sur les catégories couvertes */}
+                  {c.noteMoyenne != null ? (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e8f4ea', color: '#1f6c33', fontWeight: 600 }}
+                      title={`Note moyenne sur ${c.nbNotes}/${c.totalCategories} catégorie(s) concernée(s)`}>
+                      ★ {c.noteMoyenne.toFixed(1)}/5
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#f0f0f3', color: '#888', fontStyle: 'italic' }}>
+                      pas noté
+                    </span>
+                  )}
+                  {!c.niveauOk && (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#ffe4e4', color: '#a83333', fontWeight: 600 }}>
+                      ✗ niveau
+                    </span>
+                  )}
+                  {c.nbDispos > 0 && (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e3f1ff', color: '#1a5490', fontWeight: 600 }}
+                      title={`Disponible sur ${c.nbDispos}/${c.N} créneaux`}>
+                      ✓ {c.nbDispos}/{c.N} dispo
+                    </span>
+                  )}
+                  {c.nbConflits > 0 && (
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fff3cd', color: '#856404', fontWeight: 600 }}
+                      title={`Déjà assigné sur ${c.nbConflits} créneaux concernés (${c.conflitsPromos.join(', ')})`}>
+                      ⚠ {c.nbConflits} conflit{c.nbConflits > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={() => onAssign(null)} style={{ color: 'var(--danger)' }}>
+            <Icon name="x" size={12} /> Retirer l'intervenant des créneaux sélectionnés
+          </button>
+          <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Annuler</button>
+        </div>
+      </div>
+    </div>
   );
 };

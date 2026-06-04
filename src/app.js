@@ -41,6 +41,7 @@ const AdminApp = () => {
           <>
             {page === 'dashboard' && <PageDashboard data={data} onNav={nav} />}
             {page === 'calendrier' && <PageCalendrier data={data} />}
+            {page === 'planning' && <PagePlanning data={data} onReload={loadAll} />}
             {page === 'intervenants' && <PageIntervenants data={data} onSelect={setSelectedId} onReload={loadAll} />}
             {page === 'programme' && <PageProgramme data={data} onReload={loadAll} />}
             {page === 'promos' && <PagePromos data={data} onReload={loadAll} />}

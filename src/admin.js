@@ -53,6 +53,7 @@ const Sidebar = ({ current, onNav, onLogout }) => {
     { title: 'Pilotage', items: [
       { id: 'dashboard', label: 'Tableau de bord', icon: 'dashboard' },
       { id: 'calendrier', label: 'Vue calendrier', icon: 'calendar' },
+      { id: 'planning', label: 'Planning', icon: 'layout' },
     ]},
     { title: 'Gestion', items: [
       { id: 'intervenants', label: 'Intervenants', icon: 'users' },

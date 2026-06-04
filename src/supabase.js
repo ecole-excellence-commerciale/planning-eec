@@ -352,6 +352,17 @@ window.db = {
     return data || [];
   },
 
+  // Modifier le module d'un créneau de promo (NE modifie PAS le programme-type)
+  // Cette modification est locale à la promo : utilisée quand on veut ajuster
+  // le planning d'une promo spécifique sans changer le modèle global.
+  async setPromoPlanningModule(planningId, moduleId) {
+    const { error } = await _client
+      .from('promo_planning')
+      .update({ module_id: moduleId })
+      .eq('id', planningId);
+    if (error) throw error;
+  },
+
   // Déduire les semaines d'une promo depuis son planning (= dates uniques des lundis)
   async getPromoSemaines(promoId) {
     const planning = await this.getPromoPlanning(promoId);

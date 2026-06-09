@@ -96,13 +96,11 @@ window.db = {
     if (error) throw error;
   },
 
-  // Suppression DÉFINITIVE d'une catégorie : cascade sur ses modules
-  // (via ON DELETE CASCADE) ET sur les ratings d'intervenants liés.
+  // Suppression DÉFINITIVE d'une catégorie : cascade automatique sur les
+  // sous-catégories (ON DELETE CASCADE), qui cascadent à leur tour sur les
+  // intervenant_ratings (sous_categorie_id ON DELETE CASCADE). Les modules
+  // gardent leur categorie_id à null (ON DELETE SET NULL).
   async deleteCategorie(id) {
-    // Les ratings sont liés à categorie_id (sans CASCADE explicite dans le schéma
-    // original car la table s'appelait matieres). Le RLS admin nous autorise à
-    // les supprimer manuellement avant.
-    await _client.from('intervenant_ratings').delete().eq('categorie_id', id);
     const { error } = await _client.from('categories').delete().eq('id', id);
     if (error) throw error;
   },
@@ -228,15 +226,22 @@ window.db = {
   },
 
   // Compteur : nombre d'intervenants ayant au moins une note dans cette catégorie
+  // (toutes sous-catégories confondues)
   async countIntervenantsParCategorie() {
-    const { data, error } = await _client
-      .from('intervenant_ratings').select('categorie_id, intervenant_id');
+    const { data: ratings, error } = await _client
+      .from('intervenant_ratings').select('sous_categorie_id, intervenant_id');
     if (error) throw error;
+    // Charger les sous-cat pour faire le lien sous_categorie_id → categorie_id
+    const { data: subs } = await _client
+      .from('sous_categories').select('id, categorie_id');
+    const catBySub = Object.fromEntries((subs || []).map(s => [s.id, s.categorie_id]));
     // Compter les intervenants distincts par catégorie
     const map = {};
-    for (const r of (data || [])) {
-      if (!map[r.categorie_id]) map[r.categorie_id] = new Set();
-      map[r.categorie_id].add(r.intervenant_id);
+    for (const r of (ratings || [])) {
+      const catId = catBySub[r.sous_categorie_id];
+      if (!catId) continue;
+      if (!map[catId]) map[catId] = new Set();
+      map[catId].add(r.intervenant_id);
     }
     return Object.fromEntries(
       Object.entries(map).map(([k, v]) => [k, v.size])
@@ -559,8 +564,12 @@ window.db = {
     return intervenants.map(i => ({
       ...i,
       niveaux: (liens || []).filter(l => l.intervenant_id === i.id).map(l => l.niveau_id),
+      // Ratings indexés par sous_categorie_id (la note est maintenant attachée
+      // à une sous-catégorie, pas à une catégorie)
       ratings: Object.fromEntries(
-        (ratings || []).filter(r => r.intervenant_id === i.id).map(r => [r.categorie_id, r.note])
+        (ratings || [])
+          .filter(r => r.intervenant_id === i.id && r.sous_categorie_id)
+          .map(r => [r.sous_categorie_id, r.note])
       ),
     }));
   },
@@ -576,7 +585,11 @@ window.db = {
     return {
       ...data,
       niveaux: (liens || []).map(l => l.niveau_id),
-      ratings: Object.fromEntries((ratings || []).map(r => [r.categorie_id, r.note])),
+      ratings: Object.fromEntries(
+        (ratings || [])
+          .filter(r => r.sous_categorie_id)
+          .map(r => [r.sous_categorie_id, r.note])
+      ),
     };
   },
 
@@ -637,15 +650,20 @@ window.db = {
     }
   },
 
-  // Rating d'une catégorie (upsert ou suppression si note=0)
-  async setRating(intervenantId, categorieId, note) {
+  // Rating d'une sous-catégorie (upsert ou suppression si note=0)
+  async setRating(intervenantId, sousCategorieId, note) {
     if (note === 0) {
       const { error } = await _client.from('intervenant_ratings')
-        .delete().eq('intervenant_id', intervenantId).eq('categorie_id', categorieId);
+        .delete()
+        .eq('intervenant_id', intervenantId)
+        .eq('sous_categorie_id', sousCategorieId);
       if (error) throw error;
     } else {
       const { error } = await _client.from('intervenant_ratings')
-        .upsert({ intervenant_id: intervenantId, categorie_id: categorieId, note });
+        .upsert(
+          { intervenant_id: intervenantId, sous_categorie_id: sousCategorieId, note },
+          { onConflict: 'intervenant_id,sous_categorie_id' }
+        );
       if (error) throw error;
     }
   },

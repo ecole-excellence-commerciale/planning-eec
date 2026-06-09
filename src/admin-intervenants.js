@@ -12,7 +12,7 @@ function lienIntervenant(token) {
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
   const run = useAsync();
-  const { intervenants, niveaux, categories } = data;
+  const { intervenants, niveaux, categories, sousCategories = [] } = data;
   const [search, setSearch] = useState('');
   const [filterStatut, setFilterStatut] = useState('all');
   const [filterNiveau, setFilterNiveau] = useState('all');
@@ -20,18 +20,32 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
   const [sortBy, setSortBy] = useState('nom');
   const [showAdd, setShowAdd] = useState(false);
 
+  // Helper : moyenne des notes d'un intervenant sur les sous-cat d'une catégorie
+  // (utilisé pour filtrer et trier par catégorie)
+  const noteMoyenneCategorie = (intervenant, catId) => {
+    if (!catId || !intervenant.ratings) return null;
+    const subsDeLaCat = sousCategories.filter(s => s.categorie_id === catId);
+    const notes = subsDeLaCat
+      .map(s => intervenant.ratings[s.id])
+      .filter(n => typeof n === 'number' && n > 0);
+    if (notes.length === 0) return null;
+    return notes.reduce((sum, n) => sum + n, 0) / notes.length;
+  };
+
   let filtered = intervenants.filter(i => {
     if (search && !`${i.prenom} ${i.nom} ${i.email || ''}`.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatut !== 'all' && i.statut !== filterStatut) return false;
     if (filterNiveau !== 'all' && !i.niveaux.includes(filterNiveau)) return false;
-    if (filterCategorie !== 'all' && !(filterCategorie in (i.ratings || {}))) return false;
+    if (filterCategorie !== 'all' && noteMoyenneCategorie(i, filterCategorie) == null) return false;
     return true;
   });
   filtered = [...filtered].sort((a, b) => {
     if (sortBy === 'tjm_asc') return (a.taux_horaire || 0) - (b.taux_horaire || 0);
     if (sortBy === 'tjm_desc') return (b.taux_horaire || 0) - (a.taux_horaire || 0);
     if (sortBy === 'rating') {
-      if (filterCategorie !== 'all') return (b.ratings[filterCategorie] || 0) - (a.ratings[filterCategorie] || 0);
+      if (filterCategorie !== 'all') {
+        return (noteMoyenneCategorie(b, filterCategorie) || 0) - (noteMoyenneCategorie(a, filterCategorie) || 0);
+      }
       return (avgRating(b.ratings) || 0) - (avgRating(a.ratings) || 0);
     }
     return `${a.nom}`.localeCompare(`${b.nom}`);
@@ -123,10 +137,15 @@ const PageIntervenants = ({ data, onSelect, onReload }) => {
                     <td>
                       {filterCategorie === 'all' ? (
                         <div className="flex gap-8" style={{ alignItems: 'center' }}>
-                          <span className="chip cyan">{nbMat} mat.</span>
+                          <span className="chip cyan">{nbMat} compétence{nbMat > 1 ? 's' : ''}</span>
                           {moy != null && <span className="flex gap-8" style={{ alignItems: 'center' }}><StarRating value={Math.round(moy)} readOnly size={13} /><span className="text-xs text-muted">{moy.toFixed(1)}</span></span>}
                         </div>
-                      ) : <StarRating value={i.ratings[filterCategorie] || 0} readOnly size={15} />}
+                      ) : (() => {
+                        const m = noteMoyenneCategorie(i, filterCategorie);
+                        return m != null
+                          ? <div className="flex gap-8" style={{ alignItems: 'center' }}><StarRating value={Math.round(m)} readOnly size={15} /><span className="text-xs text-muted">{m.toFixed(1)}</span></div>
+                          : <span className="text-xs text-muted">—</span>;
+                      })()}
                     </td>
                     <td className="text-sm"><strong>{i.taux_horaire ? i.taux_horaire + ' €' : '—'}</strong></td>
                     <td className="text-sm">{fmtEur(calcTJM(i.taux_horaire))}</td>
@@ -218,7 +237,7 @@ const ModalAjoutIntervenant = ({ niveaux, onClose, onAdded }) => {
 // ---- FICHE INTERVENANT ----
 const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const toast = useToast();
-  const { niveaux, categories, campagne } = data;
+  const { niveaux, categories, sousCategories = [], campagne } = data;
   const [inter, setInter] = useState(null);
   const [tab, setTab] = useState('dispos');
   const [tauxEdit, setTauxEdit] = useState('');
@@ -284,11 +303,11 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
     toast('Taux horaire mis à jour', 'success');
     load(); onReload();
   };
-  const setRating = async (matId, note) => {
-    await db.setRating(inter.id, matId, note);
+  const setRating = async (sousCategorieId, note) => {
+    await db.setRating(inter.id, sousCategorieId, note);
     setInter(prev => {
       const r = { ...prev.ratings };
-      if (note === 0) delete r[matId]; else r[matId] = note;
+      if (note === 0) delete r[sousCategorieId]; else r[sousCategorieId] = note;
       return { ...prev, ratings: r };
     });
     onReload();
@@ -305,8 +324,21 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   };
   const copyLink = () => { navigator.clipboard.writeText(lienIntervenant(inter.token)); toast('Lien copié', 'success'); };
 
-  const categoriesNotees = categories.filter(m => m.id in inter.ratings);
-  const categoriesNonNotees = categories.filter(m => !(m.id in inter.ratings));
+  // Regrouper les sous-catégories par catégorie (Général en dernier dans chaque)
+  const sousCatsByCat = (() => {
+    const map = {};
+    for (const sc of sousCategories) {
+      (map[sc.categorie_id] = map[sc.categorie_id] || []).push(sc);
+    }
+    for (const k of Object.keys(map)) {
+      map[k].sort((a, b) => {
+        if (a.label === 'Général' && b.label !== 'Général') return 1;
+        if (a.label !== 'Général' && b.label === 'Général') return -1;
+        return (a.ordre || 0) - (b.ordre || 0);
+      });
+    }
+    return map;
+  })();
   const setEd = (k, v) => setEditForm(f => ({ ...f, [k]: v }));
 
   return (
@@ -470,27 +502,47 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           </div>
 
           <div className="card">
-            <div className="card-header"><div className="card-title" style={{ marginBottom: 0 }}>Compétences par catégorie</div><span className="chip cyan text-xs">Confidentiel</span></div>
-            {categoriesNotees.length === 0 && <div className="text-sm text-muted" style={{ padding: '6px 0' }}>Aucune catégorie notée.</div>}
-            {categoriesNotees.map(m => (
-              <div key={m.id} className="flex-between" style={{ padding: '8px 0', borderBottom: '1px solid var(--bg-alt)' }}>
-                <span className="text-sm" style={{ fontWeight: 500 }}>{m.label}</span>
-                <StarRating value={inter.ratings[m.id]} onChange={(n) => setRating(m.id, n)} />
-              </div>
-            ))}
-            {categoriesNonNotees.length > 0 && (
-              <details style={{ marginTop: 12 }}>
-                <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--navy)', fontWeight: 600 }}>+ Noter une autre catégorie</summary>
-                <div style={{ marginTop: 8 }}>
-                  {categoriesNonNotees.map(m => (
-                    <div key={m.id} className="flex-between" style={{ padding: '6px 0' }}>
-                      <span className="text-sm">{m.label}</span>
-                      <StarRating value={0} onChange={(n) => setRating(m.id, n)} size={15} />
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
+            <div className="card-header">
+              <div className="card-title" style={{ marginBottom: 0 }}>Compétences par sous-catégorie</div>
+              <span className="chip cyan text-xs">Confidentiel</span>
+            </div>
+            <div className="text-sm text-muted mb-16" style={{ fontSize: 12 }}>
+              Note la maîtrise de l'intervenant dans chaque sous-catégorie (1 = débutant, 5 = expert).
+              La note 0 retire l'évaluation. Les sous-catégories non notées sont ignorées par l'algorithme de suggestion.
+            </div>
+            {categories.sort((a, b) => (a.ordre || 0) - (b.ordre || 0)).map(cat => {
+              const subs = sousCatsByCat[cat.id] || [];
+              if (subs.length === 0) return null;
+              const subsNotees = subs.filter(s => s.id in inter.ratings);
+              const totalSubs = subs.length;
+              return (
+                <details key={cat.id} open={subsNotees.length > 0}
+                  style={{ marginBottom: 8, borderBottom: '1px solid var(--bg-alt)', paddingBottom: 6 }}>
+                  <summary style={{ cursor: 'pointer', padding: '6px 0', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 14 }}>▸</span>
+                    <span style={{ fontWeight: 600, color: 'var(--navy)', flex: 1 }}>{cat.label}</span>
+                    <span className="text-xs text-muted">
+                      {subsNotees.length} / {totalSubs} notées
+                    </span>
+                  </summary>
+                  <div style={{ padding: '4px 0 4px 22px' }}>
+                    {subs.map(sub => (
+                      <div key={sub.id} className="flex-between" style={{ padding: '6px 0' }}>
+                        <span className="text-sm" style={{
+                          color: sub.label === 'Général' ? 'var(--text-muted)' : 'var(--navy)',
+                          fontStyle: sub.label === 'Général' ? 'italic' : 'normal',
+                        }}>
+                          {sub.label}
+                        </span>
+                        <StarRating value={inter.ratings[sub.id] || 0}
+                          onChange={(n) => setRating(sub.id, n)}
+                          size={15} />
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         </div>
       </div>

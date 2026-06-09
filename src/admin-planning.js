@@ -23,7 +23,7 @@ const couleurCat = (typeof couleurCategorie !== 'undefined') ? couleurCategorie 
 
 const PagePlanning = ({ data, onReload }) => {
   const toast = useToast();
-  const { promos, niveaux, categories, modules, intervenants, campagne } = data;
+  const { promos, niveaux, categories, sousCategories = [], modules, intervenants, campagne } = data;
 
   // Sélection de la promo (par défaut la 1ère)
   const [selectedPromoId, setSelectedPromoId] = useState(() => promos[0]?.id || null);
@@ -82,6 +82,7 @@ const PagePlanning = ({ data, onReload }) => {
   // Index des modules/catégories/intervenants
   const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
   const categorieById = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
+  const sousCategorieById = useMemo(() => Object.fromEntries(sousCategories.map(s => [s.id, s])), [sousCategories]);
   const intervenantById = useMemo(
     () => Object.fromEntries((intervenants || []).map(i => [i.id, i])),
     [intervenants]
@@ -166,7 +167,8 @@ const PagePlanning = ({ data, onReload }) => {
     const mod = moduleById[moduleId];
     if (!mod) return null;
     const cat = categorieById[mod.categorie_id];
-    return { module: mod, categorie: cat, couleur: couleurCat(cat?.label) };
+    const sousCat = mod.sous_categorie_id ? sousCategorieById[mod.sous_categorie_id] : null;
+    return { module: mod, categorie: cat, sousCategorie: sousCat, couleur: couleurCat(cat?.label) };
   };
 
   // Liste des semaines pédagogiques présentes dans ce planning
@@ -553,6 +555,11 @@ const PagePlanning = ({ data, onReload }) => {
                                             {info.categorie.label}
                                           </div>
                                         )}
+                                        {info.sousCategorie && info.sousCategorie.label !== 'Général' && (
+                                          <div style={{ opacity: 0.55, fontSize: 9, fontStyle: 'italic', marginTop: 1 }}>
+                                            {info.sousCategorie.label}
+                                          </div>
+                                        )}
                                         {(() => {
                                           const interv = entry.intervenant_id && intervenantById[entry.intervenant_id];
                                           const conflits = conflitPour(entry);
@@ -611,6 +618,7 @@ const PagePlanning = ({ data, onReload }) => {
           promoById={promoById}
           moduleById={moduleById}
           categorieById={categorieById}
+          sousCategorieById={sousCategorieById}
           onSaveModule={saveModule}
           onClearModule={() => saveModule(null, true)}
           onSaveIntervenant={saveIntervenant}
@@ -659,6 +667,7 @@ const PagePlanning = ({ data, onReload }) => {
           promoById={promoById}
           moduleById={moduleById}
           categorieById={categorieById}
+          sousCategorieById={sousCategorieById}
           onAssign={bulkAssignIntervenant}
           onClose={() => setBulkModalOpen(false)}
         />
@@ -673,7 +682,7 @@ const PagePlanning = ({ data, onReload }) => {
 // ============================================================
 const ModalEditeurCreneau = ({
   editing, promo, niveau, categories, modules, intervenants,
-  disposIntervenants, assignationsAutres, promoById, moduleById, categorieById,
+  disposIntervenants, assignationsAutres, promoById, moduleById, categorieById, sousCategorieById,
   onSaveModule, onClearModule, onSaveIntervenant, onClose,
 }) => {
   // Onglet actif (par défaut "module" si pas de module assigné, sinon "intervenant"
@@ -685,8 +694,10 @@ const ModalEditeurCreneau = ({
   const dateLabel = d.toLocaleDateString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
   const periodeLabel = editing.periode === 'am' ? 'matin' : 'après-midi';
 
-  // Module actuel et catégorie associée
+  // Module actuel, sous-catégorie et catégorie associées
   const currentModule = editing.currentModuleId ? moduleById[editing.currentModuleId] : null;
+  const currentSousCategorie = currentModule?.sous_categorie_id
+    ? (sousCategorieById?.[currentModule.sous_categorie_id] || null) : null;
   const currentCategorie = currentModule ? categorieById[currentModule.categorie_id] : null;
   const currentIntervenant = editing.currentIntervenantId
     ? intervenants.find(i => i.id === editing.currentIntervenantId)
@@ -711,12 +722,15 @@ const ModalEditeurCreneau = ({
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Module</div>
             {currentModule ? (
-              <div style={{ fontWeight: 600, color: 'var(--navy)' }}>
-                {currentModule.label}
+              <div>
+                <div style={{ fontWeight: 600, color: 'var(--navy)' }}>{currentModule.label}</div>
                 {currentCategorie && (
-                  <span style={{ opacity: 0.7, fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
-                    · {currentCategorie.label}
-                  </span>
+                  <div style={{ opacity: 0.7, fontSize: 11, marginTop: 2 }}>
+                    {currentCategorie.label}
+                    {currentSousCategorie && currentSousCategorie.label !== 'Général' && (
+                      <span style={{ marginLeft: 4 }}>· <em>{currentSousCategorie.label}</em></span>
+                    )}
+                  </div>
                 )}
               </div>
             ) : (
@@ -778,6 +792,7 @@ const ModalEditeurCreneau = ({
             promo={promo}
             niveau={niveau}
             currentCategorie={currentCategorie}
+            currentSousCategorie={currentSousCategorie}
             intervenants={intervenants}
             disposIntervenants={disposIntervenants}
             assignationsAutres={assignationsAutres}
@@ -879,7 +894,7 @@ const OngletModule = ({ editing, categories, modules, onSaveModule, onClearModul
 
 // ─── Onglet "Intervenant" avec algorithme de suggestion ─────────────────
 const OngletIntervenant = ({
-  editing, promo, niveau, currentCategorie, intervenants,
+  editing, promo, niveau, currentCategorie, currentSousCategorie, intervenants,
   disposIntervenants, assignationsAutres, promoById,
   onSaveIntervenant, onClose,
 }) => {
@@ -889,34 +904,29 @@ const OngletIntervenant = ({
   // ─── Calculer pour chaque intervenant son score et son statut ──────────
   // Critères :
   //   • Niveau OK ?    (qualifié pour le niveau de la promo)
-  //   • Qualif module : note sur la catégorie du module (0..5, null si pas de note)
+  //   • Qualif module : note sur la SOUS-CATÉGORIE du module (0..5, null si pas de note)
   //   • Dispo          : déclarée dispo ce jour×période sur la campagne courante
   //   • Conflit        : déjà assigné ailleurs sur cette date×période
-  //
-  // Score = combinaison de ces critères (priorité aux dispos qualifiés sans conflit)
   const candidats = useMemo(() => {
     return intervenants.map(i => {
       const niveauOk = niveau ? (i.niveaux || []).includes(niveau.id) : true;
-      const note = currentCategorie ? (i.ratings?.[currentCategorie.id] || null) : null;
+      // Note sur la sous-catégorie du module (pas la catégorie comme avant)
+      const note = currentSousCategorie ? (i.ratings?.[currentSousCategorie.id] || null) : null;
       const qualifieModule = !!note;
-      // Disponibilité : la table dispos contient les dispos déclarées
-      // dispo.date_jour === editing.dateJour et dispo.periode === editing.periode
       const dispoRecord = disposIntervenants.find(d =>
         d.intervenant_id === i.id && d.date === editing.dateJour && d.periode === editing.periode
       );
       const dispoStatut = dispoRecord ? 'dispo' : 'inconnu';
-      // Conflit ?
       const conflitsListe = assignationsAutres.filter(a =>
         a.intervenant_id === i.id && a.date_jour === editing.dateJour && a.periode === editing.periode
       ).map(a => promoById[a.promo_id]?.label).filter(Boolean);
       const hasConflit = conflitsListe.length > 0;
 
-      // Score (plus haut = meilleur)
       let score = 0;
       if (niveauOk) score += 1000;
-      if (qualifieModule) score += 100 + (note * 20); // note 5 → +200, note 1 → +120
+      if (qualifieModule) score += 100 + (note * 20);
       if (dispoStatut === 'dispo') score += 500;
-      if (hasConflit) score -= 100; // pénalité de conflit (pas exclusion, juste warning)
+      if (hasConflit) score -= 100;
 
       return {
         intervenant: i,
@@ -925,7 +935,7 @@ const OngletIntervenant = ({
         score,
       };
     }).sort((a, b) => b.score - a.score);
-  }, [intervenants, niveau, currentCategorie, disposIntervenants, assignationsAutres, editing.dateJour, editing.periode, promoById]);
+  }, [intervenants, niveau, currentSousCategorie, disposIntervenants, assignationsAutres, editing.dateJour, editing.periode, promoById]);
 
   // Filtre recherche + filtre "non qualifiés"
   const filtered = useMemo(() => {
@@ -955,9 +965,14 @@ const OngletIntervenant = ({
         </label>
       </div>
 
-      {!currentCategorie && (
+      {!currentSousCategorie && (
         <div style={{ padding: 10, background: '#fff8e5', borderRadius: 6, marginBottom: 12, fontSize: 12, color: '#856404' }}>
-          ⓘ Aucun module assigné : les intervenants ne sont pas classés par qualification de catégorie.
+          ⓘ Aucun module assigné : les intervenants ne sont pas classés par qualification.
+        </div>
+      )}
+      {currentSousCategorie && currentSousCategorie.label === 'Général' && (
+        <div style={{ padding: 10, background: '#fff8e5', borderRadius: 6, marginBottom: 12, fontSize: 12, color: '#856404' }}>
+          ⓘ Ce module est dans la sous-catégorie <strong>Général</strong> — pour un meilleur classement, déplace-le vers une sous-catégorie spécifique dans « Niveaux & catégories ».
         </div>
       )}
 
@@ -990,14 +1005,16 @@ const OngletIntervenant = ({
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {/* Note sur la catégorie */}
-                {currentCategorie && (
+                {/* Note sur la sous-catégorie */}
+                {currentSousCategorie && (
                   c.note ? (
-                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e8f4ea', color: '#1f6c33', fontWeight: 600 }}>
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e8f4ea', color: '#1f6c33', fontWeight: 600 }}
+                      title={`Note sur ${currentSousCategorie.label}`}>
                       ★ {c.note}/5
                     </span>
                   ) : (
-                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#f0f0f3', color: '#888', fontStyle: 'italic' }}>
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#f0f0f3', color: '#888', fontStyle: 'italic' }}
+                      title={`Pas de note sur ${currentSousCategorie.label}`}>
                       pas noté
                     </span>
                   )
@@ -1060,13 +1077,13 @@ const ModalAffectationBulk = ({
       .filter(Boolean);
   }, [selectedPlanningIds, planning]);
 
-  // Catégories distinctes couvertes par les modules sélectionnés
+  // Sous-catégories distinctes couvertes par les modules sélectionnés
   // (utilisé pour calculer la note moyenne d'un intervenant)
-  const categoriesIds = useMemo(() => {
+  const sousCategoriesIds = useMemo(() => {
     const set = new Set();
     selectedEntries.forEach(e => {
       const mod = moduleById[e.module_id];
-      if (mod) set.add(mod.categorie_id);
+      if (mod?.sous_categorie_id) set.add(mod.sous_categorie_id);
     });
     return [...set];
   }, [selectedEntries, moduleById]);
@@ -1076,13 +1093,12 @@ const ModalAffectationBulk = ({
     const N = selectedEntries.length;
     return intervenants.map(i => {
       const niveauOk = niveau ? (i.niveaux || []).includes(niveau.id) : true;
-      // Note moyenne sur les catégories couvertes (si l'intervenant a une note sur chacune)
-      const notes = categoriesIds
-        .map(cid => i.ratings?.[cid])
+      // Note moyenne sur les sous-catégories couvertes
+      const notes = sousCategoriesIds
+        .map(scid => i.ratings?.[scid])
         .filter(n => typeof n === 'number');
       const noteMoyenne = notes.length > 0 ? (notes.reduce((s, n) => s + n, 0) / notes.length) : null;
-      const qualifMoy = notes.length / (categoriesIds.length || 1); // 0..1 : couverture des catégories
-      // Combien de créneaux où il est dispo / en conflit
+      const qualifMoy = notes.length / (sousCategoriesIds.length || 1); // 0..1 : couverture des sous-cat
       let nbDispos = 0;
       let nbConflits = 0;
       const conflitsPromos = new Set();
@@ -1102,21 +1118,20 @@ const ModalAffectationBulk = ({
           });
         }
       });
-      // Scoring agrégé
       let score = 0;
       if (niveauOk) score += 1000;
       if (noteMoyenne) score += 100 + (noteMoyenne * 20);
-      score += qualifMoy * 50; // couverture des catégories
+      score += qualifMoy * 50;
       score += (nbDispos / Math.max(N, 1)) * 500;
       score -= (nbConflits / Math.max(N, 1)) * 200;
       return {
         intervenant: i,
-        niveauOk, noteMoyenne, nbNotes: notes.length, totalCategories: categoriesIds.length,
+        niveauOk, noteMoyenne, nbNotes: notes.length, totalSousCategories: sousCategoriesIds.length,
         nbDispos, nbConflits, conflitsPromos: [...conflitsPromos],
         score, N,
       };
     }).sort((a, b) => b.score - a.score);
-  }, [intervenants, niveau, categoriesIds, disposIntervenants, assignationsAutres, selectedEntries, promoById]);
+  }, [intervenants, niveau, sousCategoriesIds, disposIntervenants, assignationsAutres, selectedEntries, promoById]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1191,7 +1206,7 @@ const ModalAffectationBulk = ({
                   {/* Note moyenne sur les catégories couvertes */}
                   {c.noteMoyenne != null ? (
                     <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#e8f4ea', color: '#1f6c33', fontWeight: 600 }}
-                      title={`Note moyenne sur ${c.nbNotes}/${c.totalCategories} catégorie(s) concernée(s)`}>
+                      title={`Note moyenne sur ${c.nbNotes}/${c.totalSousCategories} sous-catégorie(s) concernée(s)`}>
                       ★ {c.noteMoyenne.toFixed(1)}/5
                     </span>
                   ) : (

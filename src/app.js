@@ -8,20 +8,20 @@ const AdminApp = () => {
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState({
-    intervenants: [], niveaux: [], categories: [], modules: [],
+    intervenants: [], niveaux: [], categories: [], sousCategories: [], modules: [],
     programmes: [], promos: [], campagnes: [], campagne: null, dispos: [],
     interParCategorie: {}
   });
 
   const loadAll = async () => {
-    const [niveaux, categories, modules, programmes, promos, campagnes, intervenants, interParCategorie] = await Promise.all([
-      db.getNiveaux(), db.getCategories(), db.getModules(),
+    const [niveaux, categories, sousCategories, modules, programmes, promos, campagnes, intervenants, interParCategorie] = await Promise.all([
+      db.getNiveaux(), db.getCategories(), db.getSousCategories(), db.getModules(),
       db.getProgrammesTypes(), db.getPromos(), db.getCampagnes(),
       db.getIntervenants(), db.countIntervenantsParCategorie()
     ]);
     const campagne = campagnes.find(c => c.statut === 'ouverte') || campagnes[0] || null;
     const dispos = campagne ? await db.getDisposCampagne(campagne.id) : [];
-    setData({ intervenants, niveaux, categories, modules, programmes, promos, campagnes, campagne, dispos, interParCategorie });
+    setData({ intervenants, niveaux, categories, sousCategories, modules, programmes, promos, campagnes, campagne, dispos, interParCategorie });
     setLoading(false);
   };
 

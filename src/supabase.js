@@ -118,6 +118,73 @@ window.db = {
   },
 
   // ----------------------------------------------------------
+  // SOUS-CATÉGORIES (niveau intermédiaire entre catégorie et module)
+  // ----------------------------------------------------------
+  async getSousCategories() {
+    const { data, error } = await _client
+      .from('sous_categories').select('*').eq('actif', true).order('ordre');
+    if (error) throw error;
+    return data;
+  },
+
+  async addSousCategorie(categorieId, label, ordre) {
+    const { data, error } = await _client
+      .from('sous_categories').insert({ categorie_id: categorieId, label, ordre })
+      .select().single();
+    if (error) throw error;
+    return data;
+  },
+
+  async renameSousCategorie(id, label) {
+    const { error } = await _client
+      .from('sous_categories').update({ label }).eq('id', id);
+    if (error) throw error;
+  },
+
+  // Suppression DÉFINITIVE d'une sous-catégorie. Les modules associés sont
+  // déplacés vers la sous-catégorie "Général" de la même catégorie (sécurité),
+  // ou sous_categorie_id devient NULL s'il n'y a pas de "Général".
+  async deleteSousCategorie(id) {
+    // 1. Récupérer la catégorie parente
+    const { data: sub } = await _client
+      .from('sous_categories').select('categorie_id, label').eq('id', id).single();
+    if (!sub) throw new Error('Sous-catégorie introuvable');
+    // 2. Trouver la sous-cat "Général" de la même catégorie (autre que celle qu'on supprime)
+    const { data: general } = await _client
+      .from('sous_categories').select('id')
+      .eq('categorie_id', sub.categorie_id)
+      .eq('label', 'Général')
+      .neq('id', id)
+      .maybeSingle();
+    // 3. Déplacer les modules vers "Général" si elle existe, sinon les laisser null
+    await _client.from('modules')
+      .update({ sous_categorie_id: general?.id || null })
+      .eq('sous_categorie_id', id);
+    // 4. Supprimer la sous-catégorie (cascade aussi sur intervenant_ratings)
+    const { error } = await _client.from('sous_categories').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  // Déplacer un module vers une autre sous-catégorie. La catégorie est mise
+  // à jour automatiquement (cohérence : la catégorie du module = celle de sa sous-cat).
+  async setModuleSousCategorie(moduleId, sousCategorieId) {
+    if (!sousCategorieId) {
+      const { error } = await _client.from('modules')
+        .update({ sous_categorie_id: null }).eq('id', moduleId);
+      if (error) throw error;
+      return;
+    }
+    // Récupérer la catégorie de la sous-cat cible
+    const { data: sub } = await _client
+      .from('sous_categories').select('categorie_id').eq('id', sousCategorieId).single();
+    if (!sub) throw new Error('Sous-catégorie introuvable');
+    const { error } = await _client.from('modules')
+      .update({ sous_categorie_id: sousCategorieId, categorie_id: sub.categorie_id })
+      .eq('id', moduleId);
+    if (error) throw error;
+  },
+
+  // ----------------------------------------------------------
   // MODULES (rattachés à une catégorie)
   // ----------------------------------------------------------
   async getModules() {
@@ -127,9 +194,20 @@ window.db = {
     return data;
   },
 
-  async addModule(categorieId, label, ordre) {
+  async addModule(categorieId, label, ordre, sousCategorieId = null) {
+    // Si pas de sous-catégorie spécifiée, prendre la "Général" de la catégorie
+    let scId = sousCategorieId;
+    if (!scId) {
+      const { data } = await _client.from('sous_categories').select('id')
+        .eq('categorie_id', categorieId).eq('label', 'Général').maybeSingle();
+      scId = data?.id || null;
+    }
     const { data, error } = await _client
-      .from('modules').insert({ categorie_id: categorieId, label, ordre })
+      .from('modules').insert({
+        categorie_id: categorieId,
+        sous_categorie_id: scId,
+        label, ordre,
+      })
       .select().single();
     if (error) throw error;
     return data;

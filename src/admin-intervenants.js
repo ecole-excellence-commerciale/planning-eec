@@ -608,32 +608,70 @@ const PageCampagnes = ({ data, onReload }) => {
 
 const PageParametres = ({ data, onReload }) => {
   const toast = useToast();
-  const { niveaux, categories, modules, interParCategorie } = data;
+  const { niveaux, categories, sousCategories = [], modules, interParCategorie } = data;
 
-  // ---- État niveau (inchangé, simple) ----
+  // ---- État niveau ----
   const [newNiveau, setNewNiveau] = useState('');
 
   // ---- État catégories ----
-  const [expanded, setExpanded] = useState({}); // { catId: true } pour les dépliées
-  const [editingCat, setEditingCat] = useState(null); // catId en cours d'édition
+  const [expanded, setExpanded] = useState({}); // { catId: true }
+  const [editingCat, setEditingCat] = useState(null);
   const [editCatText, setEditCatText] = useState('');
   const [showAddCat, setShowAddCat] = useState(false);
   const [newCatText, setNewCatText] = useState('');
 
+  // ---- État sous-catégories ----
+  const [expandedSub, setExpandedSub] = useState({}); // { subCatId: true } : déplié ou pas
+  const [editingSub, setEditingSub] = useState(null);
+  const [editSubText, setEditSubText] = useState('');
+  const [addingSubFor, setAddingSubFor] = useState(null); // catId
+  const [newSubText, setNewSubText] = useState('');
+  const [deleteSubModal, setDeleteSubModal] = useState(null); // {id, label, nbModules}
+
   // ---- État modules ----
-  const [editingMod, setEditingMod] = useState(null); // modId en cours d'édition
+  const [editingMod, setEditingMod] = useState(null);
   const [editModText, setEditModText] = useState('');
-  const [addingModFor, setAddingModFor] = useState(null); // catId en mode "ajout de module"
+  const [addingModFor, setAddingModFor] = useState(null); // sous_categorie_id
   const [newModText, setNewModText] = useState('');
 
+  // ---- Drag-and-drop pour déplacer un module ----
+  const [dragModule, setDragModule] = useState(null);    // {id, label, sous_categorie_id}
+  const [dropTargetSub, setDropTargetSub] = useState(null); // sub_cat id en cours de survol
+
   // ---- État modales de suppression définitive ----
-  const [deleteCatModal, setDeleteCatModal] = useState(null); // {id, label, nbModules, nbNotes}
+  const [deleteCatModal, setDeleteCatModal] = useState(null);
   const [deleteCatConfirm, setDeleteCatConfirm] = useState('');
-  const [deleteModModal, setDeleteModModal] = useState(null); // {id, label, categorieLabel}
+  const [deleteModModal, setDeleteModModal] = useState(null);
   const [deleteModConfirm, setDeleteModConfirm] = useState('');
 
-  // Helpers
+  // ---- Helpers d'indexation ----
+  const sousCategoriesByCat = useMemo(() => {
+    const map = {};
+    for (const sc of sousCategories) {
+      (map[sc.categorie_id] = map[sc.categorie_id] || []).push(sc);
+    }
+    // Tri : "Général" en dernier dans chaque catégorie, puis par ordre
+    for (const k of Object.keys(map)) {
+      map[k].sort((a, b) => {
+        if (a.label === 'Général' && b.label !== 'Général') return 1;
+        if (a.label !== 'Général' && b.label === 'Général') return -1;
+        return (a.ordre || 0) - (b.ordre || 0);
+      });
+    }
+    return map;
+  }, [sousCategories]);
+
+  const modulesBySousCat = useMemo(() => {
+    const map = {};
+    for (const m of modules) {
+      const key = m.sous_categorie_id || `_orphan_${m.categorie_id}`;
+      (map[key] = map[key] || []).push(m);
+    }
+    return map;
+  }, [modules]);
+
   const modulesByCat = useMemo(() => {
+    // Conservé pour compteur en haut de catégorie
     const map = {};
     for (const m of modules) {
       (map[m.categorie_id] = map[m.categorie_id] || []).push(m);
@@ -641,7 +679,17 @@ const PageParametres = ({ data, onReload }) => {
     return map;
   }, [modules]);
 
-  const toggleExpand = (catId) => setExpanded(e => ({ ...e, [catId]: !e[catId] }));
+  const toggleExpand = (catId) => {
+    setExpanded(e => ({ ...e, [catId]: !e[catId] }));
+    // Si on ouvre une catégorie, déplier aussi toutes ses sous-cat par défaut
+    if (!expanded[catId]) {
+      const subs = sousCategoriesByCat[catId] || [];
+      const subExpansions = {};
+      subs.forEach(s => { subExpansions[s.id] = true; });
+      setExpandedSub(prev => ({ ...prev, ...subExpansions }));
+    }
+  };
+  const toggleExpandSub = (subId) => setExpandedSub(e => ({ ...e, [subId]: !e[subId] }));
 
   // ---- ACTIONS NIVEAUX ----
   const addNiveau = async () => {
@@ -657,9 +705,7 @@ const PageParametres = ({ data, onReload }) => {
   };
 
   // ---- ACTIONS CATÉGORIES ----
-  const startEditCat = (cat) => {
-    setEditingCat(cat.id); setEditCatText(cat.label);
-  };
+  const startEditCat = (cat) => { setEditingCat(cat.id); setEditCatText(cat.label); };
   const saveEditCat = async (catId) => {
     if (!editCatText.trim()) { setEditingCat(null); return; }
     await db.renameCategorie(catId, editCatText.trim());
@@ -684,23 +730,53 @@ const PageParametres = ({ data, onReload }) => {
     setDeleteCatModal(null); onReload();
   };
 
-  // ---- ACTIONS MODULES ----
-  const startEditMod = (mod) => {
-    setEditingMod(mod.id); setEditModText(mod.label);
+  // ---- ACTIONS SOUS-CATÉGORIES ----
+  const startEditSub = (sub) => { setEditingSub(sub.id); setEditSubText(sub.label); };
+  const saveEditSub = async (subId) => {
+    if (!editSubText.trim()) { setEditingSub(null); return; }
+    await db.renameSousCategorie(subId, editSubText.trim());
+    toast('Sous-catégorie renommée', 'success');
+    setEditingSub(null); onReload();
   };
+  const startAddSub = (catId) => {
+    setAddingSubFor(catId); setNewSubText('');
+    setExpanded(e => ({ ...e, [catId]: true }));
+  };
+  const addSub = async (catId) => {
+    if (!newSubText.trim()) { setAddingSubFor(null); return; }
+    const existing = (sousCategoriesByCat[catId] || []).length;
+    await db.addSousCategorie(catId, newSubText.trim(), (existing + 1) * 10);
+    toast('Sous-catégorie ajoutée', 'success');
+    setNewSubText(''); setAddingSubFor(null); onReload();
+  };
+  const askDeleteSub = (sub) => {
+    const nbMods = (modulesBySousCat[sub.id] || []).length;
+    setDeleteSubModal({ id: sub.id, label: sub.label, nbModules: nbMods });
+  };
+  const confirmDeleteSub = async () => {
+    await db.deleteSousCategorie(deleteSubModal.id);
+    toast('Sous-catégorie supprimée', 'success');
+    setDeleteSubModal(null); onReload();
+  };
+
+  // ---- ACTIONS MODULES ----
+  const startEditMod = (mod) => { setEditingMod(mod.id); setEditModText(mod.label); };
   const saveEditMod = async (modId) => {
     if (!editModText.trim()) { setEditingMod(null); return; }
     await db.renameModule(modId, editModText.trim());
     toast('Module renommé', 'success');
     setEditingMod(null); onReload();
   };
-  const startAddMod = (catId) => {
-    setAddingModFor(catId); setNewModText(''); setExpanded(e => ({ ...e, [catId]: true }));
+  const startAddMod = (subId) => {
+    setAddingModFor(subId); setNewModText('');
+    setExpandedSub(e => ({ ...e, [subId]: true }));
   };
-  const addMod = async (catId) => {
+  const addMod = async (subId) => {
     if (!newModText.trim()) { setAddingModFor(null); return; }
-    const ordre = (modulesByCat[catId] || []).length + 1;
-    await db.addModule(catId, newModText.trim(), ordre);
+    const sub = sousCategories.find(s => s.id === subId);
+    if (!sub) return;
+    const ordre = (modulesBySousCat[subId] || []).length + 1;
+    await db.addModule(sub.categorie_id, newModText.trim(), ordre, subId);
     toast('Module ajouté', 'success');
     setNewModText(''); setAddingModFor(null); onReload();
   };
@@ -712,6 +788,37 @@ const PageParametres = ({ data, onReload }) => {
     await db.deleteModule(deleteModModal.id);
     toast('Module supprimé', 'success');
     setDeleteModModal(null); onReload();
+  };
+
+  // ---- DRAG-AND-DROP MODULE → SOUS-CATÉGORIE ----
+  const onDragStart = (e, mod) => {
+    setDragModule(mod);
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', mod.id); } catch {}
+  };
+  const onDragEnd = () => { setDragModule(null); setDropTargetSub(null); };
+  const onDragOver = (e, subId) => {
+    if (!dragModule) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dropTargetSub !== subId) setDropTargetSub(subId);
+  };
+  const onDragLeave = (e) => {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setDropTargetSub(null);
+  };
+  const onDrop = async (e, subId) => {
+    e.preventDefault();
+    const mod = dragModule;
+    setDragModule(null); setDropTargetSub(null);
+    if (!mod || mod.sous_categorie_id === subId) return;
+    try {
+      await db.setModuleSousCategorie(mod.id, subId);
+      toast('Module déplacé', 'success');
+      onReload();
+    } catch (err) {
+      console.error(err); toast(err.message || 'Erreur', 'error');
+    }
   };
 
   // ---- TRI : catégories triées par ordre ----
@@ -759,7 +866,9 @@ const PageParametres = ({ data, onReload }) => {
         </div>
 
         <div className="text-sm text-muted mb-16">
-          Clique sur une catégorie pour voir ses modules. Double-clique sur un nom pour le renommer.
+          Hiérarchie : <strong>Catégorie</strong> → <strong>Sous-catégorie</strong> → <strong>Modules</strong>.
+          Tu peux <strong>glisser un module</strong> dans une autre sous-catégorie pour le déplacer.
+          Double-clique sur un nom pour le renommer.
         </div>
 
         {/* Ligne d'ajout de catégorie */}
@@ -782,13 +891,14 @@ const PageParametres = ({ data, onReload }) => {
             Aucune catégorie. Clique sur « Nouvelle catégorie » pour commencer.
           </div>
         ) : sortedCats.map(cat => {
-          const catModules = (modulesByCat[cat.id] || []).slice().sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+          const catModules = (modulesByCat[cat.id] || []);
+          const subCats = sousCategoriesByCat[cat.id] || [];
           const nbInter = interParCategorie[cat.id] || 0;
           const isExpanded = expanded[cat.id];
           const isEmpty = catModules.length === 0 && nbInter === 0;
           return (
             <div key={cat.id} style={{ borderTop: '1px solid var(--bg-alt)' }}>
-              {/* Ligne catégorie */}
+              {/* Ligne CATÉGORIE */}
               <div className="flex-between" style={{ padding: '10px 4px', alignItems: 'center', gap: 8 }}>
                 <div className="flex gap-8" style={{ alignItems: 'center', flex: 1, minWidth: 0 }}>
                   <span onClick={() => toggleExpand(cat.id)}
@@ -811,9 +921,7 @@ const PageParametres = ({ data, onReload }) => {
                 </div>
                 <div className="flex gap-8" style={{ alignItems: 'center' }}>
                   <span className="text-xs" style={{ color: isEmpty ? 'var(--danger)' : 'var(--text-muted)' }}>
-                    {catModules.length} module{catModules.length > 1 ? 's' : ''}
-                    {' · '}
-                    {nbInter} intervenant{nbInter > 1 ? 's' : ''} noté{nbInter > 1 ? 's' : ''}
+                    {subCats.length} sous-cat · {catModules.length} module{catModules.length > 1 ? 's' : ''} · {nbInter} noté{nbInter > 1 ? 's' : ''}
                   </span>
                   <button className="btn btn-ghost btn-sm" title="Renommer" onClick={() => startEditCat(cat)}>
                     <Icon name="edit" size={12} />
@@ -825,59 +933,163 @@ const PageParametres = ({ data, onReload }) => {
                 </div>
               </div>
 
-              {/* Modules de la catégorie (dépliés) */}
+              {/* Sous-catégories (déplié) */}
               {isExpanded && (
-                <div style={{ padding: '4px 0 12px 36px', background: 'var(--bg-alt)' }}>
-                  {catModules.length === 0 && addingModFor !== cat.id && (
-                    <div className="text-xs text-muted" style={{ padding: '6px 0' }}>
-                      Pas encore de module dans cette catégorie.
+                <div style={{ padding: '4px 0 12px 24px', background: 'var(--bg-alt)' }}>
+                  {subCats.length === 0 && addingSubFor !== cat.id && (
+                    <div className="text-xs text-muted" style={{ padding: '6px 12px' }}>
+                      Aucune sous-catégorie. Clique sur « Ajouter une sous-catégorie ».
                     </div>
                   )}
-                  {catModules.map(mod => (
-                    <div key={mod.id} className="flex-between" style={{ padding: '4px 12px 4px 4px', alignItems: 'center' }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {editingMod === mod.id ? (
-                          <input type="text" autoFocus value={editModText}
-                            onChange={e => setEditModText(e.target.value)}
-                            onBlur={() => saveEditMod(mod.id)}
-                            onKeyDown={e => { if (e.key === 'Enter') saveEditMod(mod.id); if (e.key === 'Escape') setEditingMod(null); }}
-                            style={{ width: '100%', maxWidth: 460 }} />
-                        ) : (
-                          <span className="text-sm"
-                            onDoubleClick={() => startEditMod(mod)}
-                            style={{ cursor: 'text', userSelect: 'none' }}>
-                            {mod.label}
-                          </span>
+
+                  {subCats.map(sub => {
+                    const subModules = (modulesBySousCat[sub.id] || []).slice().sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+                    const isSubExpanded = expandedSub[sub.id];
+                    const isDropTarget = dropTargetSub === sub.id && dragModule && dragModule.sous_categorie_id !== sub.id;
+                    return (
+                      <div key={sub.id}
+                        onDragOver={(e) => onDragOver(e, sub.id)}
+                        onDragLeave={onDragLeave}
+                        onDrop={(e) => onDrop(e, sub.id)}
+                        style={{
+                          borderTop: '1px dashed var(--border)',
+                          background: isDropTarget ? 'var(--cyan-light)' : 'transparent',
+                          outline: isDropTarget ? '2px dashed var(--cyan)' : 'none',
+                          outlineOffset: -2,
+                          transition: 'background 0.1s',
+                        }}>
+                        {/* Ligne SOUS-CATÉGORIE */}
+                        <div className="flex-between" style={{ padding: '6px 12px', alignItems: 'center', gap: 8 }}>
+                          <div className="flex gap-8" style={{ alignItems: 'center', flex: 1, minWidth: 0 }}>
+                            <span onClick={() => toggleExpandSub(sub.id)}
+                              style={{ cursor: 'pointer', transition: 'transform 0.15s', transform: isSubExpanded ? 'rotate(90deg)' : 'none', color: 'var(--text-muted)' }}>
+                              <Icon name="chevronRight" size={12} />
+                            </span>
+                            {editingSub === sub.id ? (
+                              <input type="text" autoFocus value={editSubText}
+                                onChange={e => setEditSubText(e.target.value)}
+                                onBlur={() => saveEditSub(sub.id)}
+                                onKeyDown={e => { if (e.key === 'Enter') saveEditSub(sub.id); if (e.key === 'Escape') setEditingSub(null); }}
+                                style={{ flex: 1, maxWidth: 320, fontSize: 13 }} />
+                            ) : (
+                              <span onDoubleClick={() => startEditSub(sub)}
+                                onClick={() => toggleExpandSub(sub.id)}
+                                style={{
+                                  fontWeight: 500,
+                                  color: sub.label === 'Général' ? 'var(--text-muted)' : 'var(--navy)',
+                                  fontSize: 13,
+                                  fontStyle: sub.label === 'Général' ? 'italic' : 'normal',
+                                  cursor: 'pointer', userSelect: 'none',
+                                }}>
+                                {sub.label}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-8" style={{ alignItems: 'center' }}>
+                            <span className="text-xs text-muted">
+                              {subModules.length} module{subModules.length > 1 ? 's' : ''}
+                            </span>
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px' }} title="Renommer" onClick={() => startEditSub(sub)}>
+                              <Icon name="edit" size={11} />
+                            </button>
+                            {sub.label !== 'Général' && (
+                              <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', color: 'var(--danger)' }}
+                                title="Supprimer (les modules iront vers Général)"
+                                onClick={() => askDeleteSub(sub)}>
+                                <Icon name="x" size={11} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Modules de la sous-catégorie (dépliés) */}
+                        {isSubExpanded && (
+                          <div style={{ padding: '0 0 6px 28px', background: '#fff' }}>
+                            {subModules.length === 0 && addingModFor !== sub.id && (
+                              <div className="text-xs text-muted" style={{ padding: '4px 0', fontStyle: 'italic' }}>
+                                Glisse un module ici, ou ajoutes-en un nouveau.
+                              </div>
+                            )}
+                            {subModules.map(mod => (
+                              <div key={mod.id} className="flex-between"
+                                draggable={true}
+                                onDragStart={(e) => onDragStart(e, mod)}
+                                onDragEnd={onDragEnd}
+                                style={{
+                                  padding: '4px 12px 4px 4px', alignItems: 'center',
+                                  cursor: 'grab',
+                                  opacity: dragModule?.id === mod.id ? 0.35 : 1,
+                                  borderRadius: 4,
+                                }}>
+                                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>⋮⋮</span>
+                                  {editingMod === mod.id ? (
+                                    <input type="text" autoFocus value={editModText}
+                                      onChange={e => setEditModText(e.target.value)}
+                                      onBlur={() => saveEditMod(mod.id)}
+                                      onKeyDown={e => { if (e.key === 'Enter') saveEditMod(mod.id); if (e.key === 'Escape') setEditingMod(null); }}
+                                      style={{ width: '100%', maxWidth: 460, fontSize: 13 }} />
+                                  ) : (
+                                    <span className="text-sm"
+                                      onDoubleClick={() => startEditMod(mod)}
+                                      style={{ cursor: 'text', userSelect: 'none' }}>
+                                      {mod.label}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex gap-4">
+                                  <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px' }} title="Renommer" onClick={() => startEditMod(mod)}>
+                                    <Icon name="edit" size={11} />
+                                  </button>
+                                  <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', color: 'var(--danger)' }} title="Supprimer définitivement"
+                                    onClick={() => askDeleteMod(mod, cat.label)}>
+                                    <Icon name="x" size={11} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+
+                            {/* Ajout de module */}
+                            {addingModFor === sub.id ? (
+                              <div className="flex gap-8" style={{ padding: '6px 4px', alignItems: 'center' }}>
+                                <input type="text" placeholder="Nom du module" autoFocus value={newModText}
+                                  onChange={e => setNewModText(e.target.value)}
+                                  onKeyDown={e => { if (e.key === 'Enter') addMod(sub.id); if (e.key === 'Escape') setAddingModFor(null); }}
+                                  style={{ flex: 1, maxWidth: 460 }} />
+                                <button className="btn btn-primary btn-sm" onClick={() => addMod(sub.id)}>
+                                  <Icon name="check" size={11} />
+                                </button>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setAddingModFor(null)}>Annuler</button>
+                              </div>
+                            ) : (
+                              <div style={{ padding: '4px 0' }}>
+                                <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => startAddMod(sub.id)}>
+                                  <Icon name="plus" size={11} /> Ajouter un module
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                      <div className="flex gap-4">
-                        <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px' }} title="Renommer" onClick={() => startEditMod(mod)}>
-                          <Icon name="edit" size={11} />
-                        </button>
-                        <button className="btn btn-ghost btn-sm" style={{ padding: '2px 6px', color: 'var(--danger)' }} title="Supprimer définitivement"
-                          onClick={() => askDeleteMod(mod, cat.label)}>
-                          <Icon name="x" size={11} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
-                  {/* Ajout de module */}
-                  {addingModFor === cat.id ? (
-                    <div className="flex gap-8" style={{ padding: '6px 4px', alignItems: 'center' }}>
-                      <input type="text" placeholder="Nom du module" autoFocus value={newModText}
-                        onChange={e => setNewModText(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') addMod(cat.id); if (e.key === 'Escape') setAddingModFor(null); }}
-                        style={{ flex: 1, maxWidth: 460 }} />
-                      <button className="btn btn-primary btn-sm" onClick={() => addMod(cat.id)}>
+                  {/* Ajout d'une sous-catégorie */}
+                  {addingSubFor === cat.id ? (
+                    <div className="flex gap-8" style={{ padding: '8px 12px', alignItems: 'center' }}>
+                      <input type="text" placeholder="Nom de la sous-catégorie" autoFocus value={newSubText}
+                        onChange={e => setNewSubText(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') addSub(cat.id); if (e.key === 'Escape') setAddingSubFor(null); }}
+                        style={{ flex: 1, maxWidth: 360 }} />
+                      <button className="btn btn-primary btn-sm" onClick={() => addSub(cat.id)}>
                         <Icon name="check" size={11} />
                       </button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => setAddingModFor(null)}>Annuler</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setAddingSubFor(null)}>Annuler</button>
                     </div>
                   ) : (
-                    <div style={{ padding: '4px 0' }}>
-                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => startAddMod(cat.id)}>
-                        <Icon name="plus" size={11} /> Ajouter un module
+                    <div style={{ padding: '8px 12px' }}>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => startAddSub(cat.id)}>
+                        <Icon name="plus" size={11} /> Ajouter une sous-catégorie
                       </button>
                     </div>
                   )}
@@ -899,6 +1111,36 @@ const PageParametres = ({ data, onReload }) => {
           <span className="text-sm">Exemple — 75 €/h → TJM <strong>{fmtEur(calcTJM(75))}</strong> · ½ j <strong>{fmtEur(calcDemiJournee(75))}</strong></span>
         </div>
       </div>
+
+      {/* MODALE : suppression d'une sous-catégorie */}
+      {deleteSubModal && (
+        <div className="modal-backdrop" onClick={() => setDeleteSubModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-head">
+              <h3 style={{ color: 'var(--danger)' }}>Supprimer la sous-catégorie</h3>
+              <div className="modal-close" onClick={() => setDeleteSubModal(null)}><Icon name="x" size={16} /></div>
+            </div>
+            <div className="text-sm" style={{ marginBottom: 12 }}>
+              Tu vas supprimer la sous-catégorie <strong>{deleteSubModal.label}</strong>.
+            </div>
+            {deleteSubModal.nbModules > 0 ? (
+              <div className="text-sm" style={{ background: '#fff8e5', padding: '10px 12px', borderRadius: 6, marginBottom: 16, color: '#856404' }}>
+                ⓘ Les <strong>{deleteSubModal.nbModules} module{deleteSubModal.nbModules > 1 ? 's' : ''}</strong> qui y sont rattaché{deleteSubModal.nbModules > 1 ? 's seront déplacés' : ' sera déplacé'} automatiquement vers la sous-catégorie <strong>Général</strong> de la même catégorie. Aucune perte de donnée.
+              </div>
+            ) : (
+              <div className="text-sm text-muted" style={{ marginBottom: 16 }}>
+                Aucun module rattaché à cette sous-catégorie.
+              </div>
+            )}
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={() => setDeleteSubModal(null)}>Annuler</button>
+              <button className="btn btn-primary" style={{ background: 'var(--danger)' }} onClick={confirmDeleteSub}>
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODALE : suppression définitive d'une catégorie */}
       {deleteCatModal && (

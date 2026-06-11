@@ -372,10 +372,12 @@ window.db = {
       const nouveauVendredi = new Date(nouveauLundi); nouveauVendredi.setDate(nouveauVendredi.getDate() + 4);
 
       // Créer 10 entrées vierges (5 jours × 2 périodes) avec semaine_num = nouvelleSemaineNum
+      // ⚠ isoDate() est utilisé pour éviter le décalage UTC qui surviendrait avec
+      // toISOString() (heure locale → UTC inverse la date d'un jour en zone UTC+).
       const rows = [];
       for (let j = 0; j < 5; j++) {
         const date = new Date(nouveauLundi); date.setDate(date.getDate() + j);
-        const dateISO = date.toISOString().slice(0, 10);
+        const dateISO = isoDate(date);
         for (const periode of ['am', 'pm']) {
           rows.push({
             promo_id: promo.id,
@@ -391,7 +393,7 @@ window.db = {
 
       // Étendre la date_fin de la promo
       await _client.from('promos')
-        .update({ date_fin: nouveauVendredi.toISOString().slice(0, 10) })
+        .update({ date_fin: isoDate(nouveauVendredi) })
         .eq('id', promo.id);
 
       totalPromos++;
@@ -540,15 +542,23 @@ window.db = {
   // Créer une nouvelle entrée dans le planning d'une promo (= ajouter un créneau
   // qui n'existait pas dans le programme-type initial). Utilisé quand on remplit
   // une case "Pas de cours" depuis l'écran Planning.
+  // Créer ou mettre à jour une entrée de planning pour un créneau donné.
+  // Utilise UPSERT atomique sur la contrainte unique (promo_id, date_jour, periode)
+  // pour rester safe avec les appels concurrents (Promise.all en bulk).
+  // L'intervenant_id existant est préservé (non écrasé) car non spécifié dans le payload.
   async addPromoPlanningEntry(promoId, semaineNum, dateJour, periode, moduleId) {
     const { data, error } = await _client
       .from('promo_planning')
-      .insert({
-        promo_id: promoId,
-        semaine_num: semaineNum,
-        date_jour: dateJour,
-        periode, module_id: moduleId,
-      })
+      .upsert(
+        {
+          promo_id: promoId,
+          semaine_num: semaineNum,
+          date_jour: dateJour,
+          periode,
+          module_id: moduleId,
+        },
+        { onConflict: 'promo_id,date_jour,periode' }
+      )
       .select().single();
     if (error) throw error;
     return data;

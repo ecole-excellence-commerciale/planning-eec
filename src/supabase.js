@@ -421,9 +421,16 @@ window.db = {
 
   // Créer une promo et lui dérouler le programme-type sur ses semaines de cours
   // semaines : tableau de dates ISO (lundis) ordonné. La 1ère devient la semaine pédagogique #1, etc.
+  // Créer une nouvelle promo et dérouler son planning initial.
+  // Pour CHAQUE semaine cochée, on crée 10 entries (5 jours × 2 périodes) :
+  // - si le programme-type a un créneau à cette position, on pose le module_id
+  // - sinon, on crée une entry vide (l'utilisateur pourra la remplir plus tard)
+  // Cela garantit que toutes les semaines cochées apparaissent dans le planning,
+  // même si le programme-type n'est pas encore entièrement rempli.
   async addPromo({ niveauId, programmeTypeId, label, dateDebut, semaines }) {
-    const dateFin = semaines.length > 0
-      ? isoDate(new Date(new Date(semaines[semaines.length - 1]).getTime() + 4 * 86400000))
+    const sortedSemaines = [...semaines].sort();
+    const dateFin = sortedSemaines.length > 0
+      ? isoDate(new Date(new Date(sortedSemaines[sortedSemaines.length - 1] + 'T00:00:00').getTime() + 4 * 86400000))
       : dateDebut;
 
     // Créer la promo
@@ -435,26 +442,35 @@ window.db = {
       }).select().single();
     if (error) throw error;
 
-    // Charger les créneaux du programme-type
+    // Charger les créneaux du programme-type pour les modules par défaut
     const { data: programmeCreneaux } = await _client
       .from('programme_creneaux')
       .select('semaine_num, jour, periode, module_id')
       .eq('programme_type_id', programmeTypeId);
 
-    // Dérouler : pour chaque créneau du programme-type, créer une ligne dans promo_planning
-    // avec la date réelle correspondant à sa semaine pédagogique
+    // Construire 10 entries par semaine cochée
     const rows = [];
-    for (const pc of (programmeCreneaux || [])) {
-      const lundiISO = semaines[pc.semaine_num - 1];
-      if (!lundiISO) continue; // si la semaine pédagogique dépasse le nb de semaines de la promo
-      const lundi = new Date(lundiISO);
-      const date_jour = isoDate(new Date(lundi.getTime() + (pc.jour - 1) * 86400000));
-      rows.push({
-        promo_id: promo.id,
-        semaine_num: pc.semaine_num,
-        date_jour, periode: pc.periode,
-        module_id: pc.module_id,
-      });
+    for (let i = 0; i < sortedSemaines.length; i++) {
+      const lundi = sortedSemaines[i];
+      const semaineNum = i + 1;
+      const lundiD = new Date(lundi + 'T00:00:00');
+      for (let j = 0; j < 5; j++) {
+        const date = new Date(lundiD); date.setDate(date.getDate() + j);
+        const dateISO = isoDate(date);
+        for (const periode of ['am', 'pm']) {
+          const pc = (programmeCreneaux || []).find(c =>
+            c.semaine_num === semaineNum && c.jour === (j + 1) && c.periode === periode
+          );
+          rows.push({
+            promo_id: promo.id,
+            semaine_num: semaineNum,
+            date_jour: dateISO,
+            periode,
+            module_id: pc?.module_id || null,
+            intervenant_id: null,
+          });
+        }
+      }
     }
     if (rows.length) {
       const { error: e2 } = await _client.from('promo_planning').insert(rows);
@@ -463,39 +479,109 @@ window.db = {
     return promo;
   },
 
-  // Mettre à jour le calendrier d'une promo (regénère intégralement son planning)
-  async updatePromoCalendrier(promoId, programmeTypeId, semaines) {
-    // Supprimer l'ancien planning
-    await _client.from('promo_planning').delete().eq('promo_id', promoId);
-    // Mettre à jour les dates de la promo
-    const dateDebut = semaines.length > 0 ? semaines[0] : null;
-    const dateFin = semaines.length > 0
-      ? isoDate(new Date(new Date(semaines[semaines.length - 1]).getTime() + 4 * 86400000))
-      : null;
-    await _client.from('promos').update({ date_debut: dateDebut, date_fin: dateFin }).eq('id', promoId);
-    // Recharger les créneaux du programme-type
+  // ─────────────────────────────────────────────────────────────────
+  // Mettre à jour le calendrier d'une promo (non-destructif)
+  // ─────────────────────────────────────────────────────────────────
+  // Compare les semaines déjà présentes avec celles cochées par l'utilisateur :
+  //   • Semaines cochées et déjà présentes en planning → CONSERVÉES INTACTES
+  //     (modules et intervenants déjà affectés ne sont jamais touchés).
+  //     Le semaine_num est juste recalculé si la position dans la séquence a changé.
+  //   • Semaines décochées qui étaient présentes → leurs 10 entrées sont supprimées.
+  //   • Nouvelles semaines cochées → 10 entrées vides sont créées (5 jours × 2 périodes).
+  //     Si le programme-type a des créneaux à la position correspondante, les modules
+  //     sont posés automatiquement.
+  async updatePromoCalendrier(promoId, programmeTypeId, semainesSelectees) {
+    // 1. Charger le planning existant + créneaux du programme-type
+    const { data: existing } = await _client
+      .from('promo_planning').select('*').eq('promo_id', promoId);
     const { data: programmeCreneaux } = await _client
       .from('programme_creneaux')
       .select('semaine_num, jour, periode, module_id')
       .eq('programme_type_id', programmeTypeId);
-    // Re-dérouler
-    const rows = [];
-    for (const pc of (programmeCreneaux || [])) {
-      const lundiISO = semaines[pc.semaine_num - 1];
-      if (!lundiISO) continue;
-      const lundi = new Date(lundiISO);
-      const date_jour = isoDate(new Date(lundi.getTime() + (pc.jour - 1) * 86400000));
-      rows.push({
-        promo_id: promoId,
-        semaine_num: pc.semaine_num,
-        date_jour, periode: pc.periode,
-        module_id: pc.module_id,
-      });
+
+    // 2. Regrouper les entries existantes par lundi de leur semaine
+    const lundiOf = (dateJourISO) => {
+      const d = new Date(dateJourISO + 'T00:00:00');
+      const dow = d.getDay() === 0 ? 7 : d.getDay();
+      return isoDate(new Date(d.getTime() - (dow - 1) * 86400000));
+    };
+    const entriesByLundi = {};
+    for (const e of (existing || [])) {
+      const lundi = lundiOf(e.date_jour);
+      (entriesByLundi[lundi] = entriesByLundi[lundi] || []).push(e);
     }
-    if (rows.length) {
-      const { error } = await _client.from('promo_planning').insert(rows);
-      if (error) throw error;
+
+    const sortedSelectees = [...semainesSelectees].sort();
+    const setSelectees = new Set(sortedSelectees);
+
+    // 3. Identifier les semaines à supprimer (étaient présentes mais plus cochées)
+    const lundisASupprimer = Object.keys(entriesByLundi).filter(l => !setSelectees.has(l));
+    for (const lundi of lundisASupprimer) {
+      const ids = entriesByLundi[lundi].map(e => e.id);
+      if (ids.length > 0) {
+        const { error } = await _client.from('promo_planning').delete().in('id', ids);
+        if (error) throw error;
+      }
     }
+
+    // 4. Pour chaque semaine sélectionnée dans l'ordre, déterminer le nouveau semaine_num
+    for (let i = 0; i < sortedSelectees.length; i++) {
+      const lundi = sortedSelectees[i];
+      const newSemaineNum = i + 1;
+      const entriesDeCetteSemaine = entriesByLundi[lundi];
+
+      if (entriesDeCetteSemaine && entriesDeCetteSemaine.length > 0) {
+        // Semaine déjà présente : on conserve toutes ses entries (modules + intervenants intacts)
+        // On met juste à jour le semaine_num si nécessaire
+        const currentNum = entriesDeCetteSemaine[0].semaine_num;
+        if (currentNum !== newSemaineNum) {
+          const ids = entriesDeCetteSemaine.map(e => e.id);
+          const { error } = await _client.from('promo_planning')
+            .update({ semaine_num: newSemaineNum })
+            .in('id', ids);
+          if (error) throw error;
+        }
+      } else {
+        // Nouvelle semaine : créer 10 entries vides (5 jours × 2 périodes)
+        // En posant le module_id du programme-type si défini à la position correspondante.
+        const lundiD = new Date(lundi + 'T00:00:00');
+        const rows = [];
+        for (let j = 0; j < 5; j++) {
+          const date = new Date(lundiD); date.setDate(date.getDate() + j);
+          const dateISO = isoDate(date);
+          for (const periode of ['am', 'pm']) {
+            const pc = (programmeCreneaux || []).find(c =>
+              c.semaine_num === newSemaineNum && c.jour === (j + 1) && c.periode === periode
+            );
+            rows.push({
+              promo_id: promoId,
+              semaine_num: newSemaineNum,
+              date_jour: dateISO,
+              periode,
+              module_id: pc?.module_id || null,
+              intervenant_id: null,
+            });
+          }
+        }
+        // Upsert pour rester safe (idempotence + appels concurrents)
+        const { error } = await _client.from('promo_planning')
+          .upsert(rows, { onConflict: 'promo_id,date_jour,periode' });
+        if (error) throw error;
+      }
+    }
+
+    // 5. Mettre à jour date_debut et date_fin de la promo (vendredi de la dernière semaine)
+    const dateDebut = sortedSelectees[0] || null;
+    let dateFin = null;
+    if (sortedSelectees.length > 0) {
+      const dernier = new Date(sortedSelectees[sortedSelectees.length - 1] + 'T00:00:00');
+      dernier.setDate(dernier.getDate() + 4);
+      dateFin = isoDate(dernier);
+    }
+    const { error: eP } = await _client.from('promos')
+      .update({ date_debut: dateDebut, date_fin: dateFin })
+      .eq('id', promoId);
+    if (eP) throw eP;
   },
 
   // Renommer une promo

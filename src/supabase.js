@@ -309,6 +309,97 @@ window.db = {
     if (error) throw error;
   },
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Ajouter une semaine à un programme-type ET propager aux promos
+  // ─────────────────────────────────────────────────────────────────────
+  // Action NON-DESTRUCTIVE :
+  //   • Aucune entrée existante du planning des promos n'est modifiée
+  //   • Aucun module ou intervenant déjà assigné n'est touché
+  //   • Pour les promos actives utilisant ce programme :
+  //       - on calcule le lundi de la nouvelle semaine (juste après la dernière
+  //         semaine présente dans leur planning)
+  //       - on crée 10 entrées vierges (5 jours × 2 périodes, module_id null)
+  //         pour qu'elles apparaissent dans l'écran Planning
+  //       - on étend la date_fin de la promo de 7 jours
+  async addWeekToProgramme(programmeTypeId) {
+    // 1. Charger le programme-type
+    const { data: pt, error: ePT } = await _client
+      .from('programmes_types').select('*')
+      .eq('id', programmeTypeId).single();
+    if (ePT) throw ePT;
+
+    const nouvelleSemaineNum = (pt.nombre_semaines || 0) + 1;
+
+    // 2. Mettre à jour le nombre_semaines du programme-type
+    const { error: e1 } = await _client.from('programmes_types')
+      .update({ nombre_semaines: nouvelleSemaineNum })
+      .eq('id', programmeTypeId);
+    if (e1) throw e1;
+
+    // 3. Pour chaque promo active utilisant ce programme-type, étendre son planning
+    const { data: promosUsantPT } = await _client
+      .from('promos').select('id, date_debut, date_fin')
+      .eq('programme_type_id', programmeTypeId)
+      .eq('actif', true);
+
+    let totalPromos = 0;
+    for (const promo of (promosUsantPT || [])) {
+      // Charger la dernière semaine présente dans le planning
+      const { data: derniereEntry } = await _client
+        .from('promo_planning')
+        .select('semaine_num, date_jour')
+        .eq('promo_id', promo.id)
+        .order('semaine_num', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      // Si la promo n'a pas encore de planning, on ne fait rien (sera généré plus tard)
+      if (!derniereEntry) continue;
+
+      // Trouver le lundi de la dernière semaine déjà présente
+      const { data: derniereSemaineEntries } = await _client
+        .from('promo_planning')
+        .select('date_jour')
+        .eq('promo_id', promo.id)
+        .eq('semaine_num', derniereEntry.semaine_num)
+        .order('date_jour');
+      const dernierLundi = derniereSemaineEntries?.[0]?.date_jour;
+      if (!dernierLundi) continue;
+
+      // Lundi de la nouvelle semaine = dernierLundi + 7 jours
+      const nouveauLundi = new Date(dernierLundi + 'T00:00:00');
+      nouveauLundi.setDate(nouveauLundi.getDate() + 7);
+      const nouveauVendredi = new Date(nouveauLundi); nouveauVendredi.setDate(nouveauVendredi.getDate() + 4);
+
+      // Créer 10 entrées vierges (5 jours × 2 périodes) avec semaine_num = nouvelleSemaineNum
+      const rows = [];
+      for (let j = 0; j < 5; j++) {
+        const date = new Date(nouveauLundi); date.setDate(date.getDate() + j);
+        const dateISO = date.toISOString().slice(0, 10);
+        for (const periode of ['am', 'pm']) {
+          rows.push({
+            promo_id: promo.id,
+            semaine_num: nouvelleSemaineNum,
+            date_jour: dateISO,
+            periode,
+            module_id: null,
+            intervenant_id: null,
+          });
+        }
+      }
+      await _client.from('promo_planning').insert(rows);
+
+      // Étendre la date_fin de la promo
+      await _client.from('promos')
+        .update({ date_fin: nouveauVendredi.toISOString().slice(0, 10) })
+        .eq('id', promo.id);
+
+      totalPromos++;
+    }
+
+    return { nouvelleSemaineNum, promosEtendues: totalPromos };
+  },
+
   // ----------------------------------------------------------
   // PROMOS (instances concrètes d'un programme-type)
   // ----------------------------------------------------------
@@ -470,6 +561,18 @@ window.db = {
       .update({ intervenant_id: intervenantId })
       .eq('id', planningId);
     if (error) throw error;
+  },
+
+  // Récupérer TOUTES les assignations d'un intervenant (toutes promos confondues)
+  // Utilisé pour la vue "Mes interventions planifiées" dans la fiche intervenant.
+  async getAllAssignationsIntervenant(intervenantId) {
+    const { data, error } = await _client
+      .from('promo_planning')
+      .select('id, promo_id, semaine_num, date_jour, periode, module_id')
+      .eq('intervenant_id', intervenantId)
+      .order('date_jour');
+    if (error) throw error;
+    return data || [];
   },
 
   // Récupérer toutes les assignations d'un intervenant à une date/période donnée

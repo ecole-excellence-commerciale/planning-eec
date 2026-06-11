@@ -237,11 +237,12 @@ const ModalAjoutIntervenant = ({ niveaux, onClose, onAdded }) => {
 // ---- FICHE INTERVENANT ----
 const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const toast = useToast();
-  const { niveaux, categories, sousCategories = [], campagne } = data;
+  const { niveaux, categories, sousCategories = [], campagne, promos = [], modules = [] } = data;
   const [inter, setInter] = useState(null);
   const [tab, setTab] = useState('dispos');
   const [tauxEdit, setTauxEdit] = useState('');
   const [disposPerso, setDisposPerso] = useState([]);
+  const [assignations, setAssignations] = useState([]); // Toutes les interventions planifiées
   // Édition de l'identité (mode édition + valeurs du formulaire)
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ prenom: '', nom: '', email: '', telephone: '', ville: '' });
@@ -258,6 +259,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
       email: i.email || '', telephone: i.telephone || '', ville: i.ville || ''
     });
     if (campagne) setDisposPerso(await db.getDisposIntervenant(intervenantId, campagne.id));
+    // Charger les interventions planifiées (toutes promos)
+    setAssignations(await db.getAllAssignationsIntervenant(intervenantId));
   };
   useEffect(() => { load(); }, [intervenantId]);
 
@@ -384,7 +387,12 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
       <div className="grid-2-1">
         <div>
           <div className="tabs">
-            <div className={'tab ' + (tab === 'dispos' ? 'active' : '')} onClick={() => setTab('dispos')}>Disponibilités</div>
+            <div className={'tab ' + (tab === 'dispos' ? 'active' : '')} onClick={() => setTab('dispos')}>
+              Disponibilités {disposPerso.length > 0 && <span className="chip cyan text-xs" style={{ marginLeft: 4 }}>{disposPerso.length}</span>}
+            </div>
+            <div className={'tab ' + (tab === 'interventions' ? 'active' : '')} onClick={() => setTab('interventions')}>
+              Interventions {assignations.length > 0 && <span className="chip cyan text-xs" style={{ marginLeft: 4 }}>{assignations.length}</span>}
+            </div>
             <div className={'tab ' + (tab === 'profil' ? 'active' : '')} onClick={() => setTab('profil')}>Profil</div>
             <div className={'tab ' + (tab === 'actions' ? 'active' : '')} onClick={() => setTab('actions')}>Actions</div>
           </div>
@@ -396,14 +404,171 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                 <div className="text-muted text-sm" style={{ padding: '20px 0', textAlign: 'center' }}>
                   {inter.prenom} n’a pas encore renseigné ses disponibilités.<br />Envoie-lui son lien personnel (onglet « Profil »).
                 </div>
+              ) : disposPerso.length === 0 ? (
+                <div className="text-muted text-sm" style={{ padding: '20px 0', textAlign: 'center' }}>
+                  Aucune disponibilité déclarée pour cette campagne.
+                </div>
               ) : (
-                <div className="text-sm">
+                <div>
                   <div className="flex gap-8 mb-16" style={{ alignItems: 'center' }}>
-                    <span className="chip success">{disposPerso.length} demi-journées disponibles</span>
+                    <span className="chip success">{disposPerso.length} demi-journée{disposPerso.length > 1 ? 's' : ''} disponible{disposPerso.length > 1 ? 's' : ''}</span>
                   </div>
-                  <div className="text-muted">Détail consultable dans la vue calendrier globale. (Édition manuelle possible — à activer si besoin.)</div>
+                  {/* Détail des dispos par semaine */}
+                  {(() => {
+                    // Grouper par lundi de semaine
+                    const lundi = (dateStr) => {
+                      const d = new Date(dateStr + 'T00:00:00');
+                      const j = d.getDay();
+                      const decal = j === 0 ? -6 : 1 - j;
+                      d.setDate(d.getDate() + decal);
+                      return d.toISOString().slice(0, 10);
+                    };
+                    const groupes = {};
+                    for (const dispo of disposPerso) {
+                      const key = lundi(dispo.date);
+                      (groupes[key] = groupes[key] || []).push(dispo);
+                    }
+                    const semaines = Object.keys(groupes).sort();
+                    return semaines.map(lundiKey => {
+                      const dispos = groupes[lundiKey].sort((a, b) =>
+                        a.date.localeCompare(b.date) || (a.periode === 'am' ? -1 : 1)
+                      );
+                      const lundiDate = new Date(lundiKey + 'T00:00:00');
+                      const dimancheDate = new Date(lundiDate); dimancheDate.setDate(lundiDate.getDate() + 6);
+                      const labelSemaine = `${lundiDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} → ${dimancheDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}`;
+                      // Construire une grille jour×période pour la semaine
+                      const jours = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven'];
+                      const cellules = {};
+                      for (const d of dispos) {
+                        const dd = new Date(d.date + 'T00:00:00');
+                        const jourIdx = dd.getDay() === 0 ? 6 : dd.getDay() - 1; // 0=lun
+                        if (jourIdx < 5) cellules[`${jourIdx}-${d.periode}`] = true;
+                      }
+                      return (
+                        <div key={lundiKey} style={{ marginBottom: 12, borderBottom: '1px solid var(--bg-alt)', paddingBottom: 8 }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                            Semaine du {labelSemaine}
+                          </div>
+                          <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr>
+                                <th style={{ textAlign: 'left', padding: 2 }}></th>
+                                {jours.map((j, i) => {
+                                  const d = new Date(lundiDate); d.setDate(d.getDate() + i);
+                                  return <th key={i} style={{ padding: 2, fontWeight: 500, color: 'var(--text-muted)' }}>{j}<br />{d.getDate()}/{d.getMonth() + 1}</th>;
+                                })}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {['am', 'pm'].map(p => (
+                                <tr key={p}>
+                                  <td style={{ padding: 4, color: 'var(--text-muted)', fontWeight: 500 }}>{p === 'am' ? 'Matin' : 'Après-midi'}</td>
+                                  {jours.map((_, i) => {
+                                    const isDispo = cellules[`${i}-${p}`];
+                                    return (
+                                      <td key={i} style={{
+                                        padding: 4, textAlign: 'center',
+                                        background: isDispo ? 'var(--cyan-light)' : '#fff',
+                                        border: '1px solid var(--bg-alt)',
+                                        borderRadius: 3,
+                                        color: isDispo ? 'var(--navy)' : 'var(--text-muted)',
+                                        fontWeight: isDispo ? 600 : 400,
+                                      }}>
+                                        {isDispo ? '✓' : '—'}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               )}
+            </div>
+          )}
+
+          {tab === 'interventions' && (
+            <div className="card">
+              <div className="card-title">Interventions planifiées</div>
+              {assignations.length === 0 ? (
+                <div className="text-muted text-sm" style={{ padding: '20px 0', textAlign: 'center' }}>
+                  Aucune intervention planifiée pour le moment.
+                </div>
+              ) : (() => {
+                // Préparer un index module et promo
+                const moduleById = Object.fromEntries(modules.map(m => [m.id, m]));
+                const sousCategorieById = Object.fromEntries(sousCategories.map(s => [s.id, s]));
+                const categorieById = Object.fromEntries(categories.map(c => [c.id, c]));
+                const promoById = Object.fromEntries(promos.map(p => [p.id, p]));
+                // Trier par date et grouper par mois
+                const sorted = [...assignations].sort((a, b) =>
+                  a.date_jour.localeCompare(b.date_jour) || (a.periode === 'am' ? -1 : 1)
+                );
+                const moisGroupes = {};
+                for (const a of sorted) {
+                  const d = new Date(a.date_jour + 'T00:00:00');
+                  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                  (moisGroupes[key] = moisGroupes[key] || []).push(a);
+                }
+                return (
+                  <div>
+                    <div className="flex gap-8 mb-16" style={{ alignItems: 'center' }}>
+                      <span className="chip cyan">{assignations.length} créneau{assignations.length > 1 ? 'x' : ''}</span>
+                      <span className="text-xs text-muted">
+                        ≈ {(assignations.length * 3.5).toFixed(1)}h · {fmtEur(inter.taux_horaire ? assignations.length * inter.taux_horaire * 3.5 : 0)}
+                      </span>
+                    </div>
+                    {Object.keys(moisGroupes).sort().map(moisKey => {
+                      const items = moisGroupes[moisKey];
+                      const [y, m] = moisKey.split('-');
+                      const moisLabel = new Date(parseInt(y), parseInt(m) - 1, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+                      return (
+                        <div key={moisKey} style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 700 }}>
+                            {moisLabel}
+                          </div>
+                          {items.map(a => {
+                            const mod = moduleById[a.module_id];
+                            const sub = mod?.sous_categorie_id ? sousCategorieById[mod.sous_categorie_id] : null;
+                            const cat = mod ? categorieById[mod.categorie_id] : null;
+                            const promo = promoById[a.promo_id];
+                            const d = new Date(a.date_jour + 'T00:00:00');
+                            const dateLabel = d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short' });
+                            return (
+                              <div key={a.id} style={{
+                                display: 'grid',
+                                gridTemplateColumns: '90px 60px 1fr auto',
+                                gap: 10, alignItems: 'center',
+                                padding: '8px 4px', borderBottom: '1px solid var(--bg-alt)',
+                                fontSize: 13,
+                              }}>
+                                <div style={{ fontWeight: 600, color: 'var(--navy)' }}>{dateLabel}</div>
+                                <div className="text-xs text-muted">{a.periode === 'am' ? 'Matin' : 'Aprem'}</div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 500 }}>{mod?.label || <em className="text-muted">Module non défini</em>}</div>
+                                  {(cat || sub) && (
+                                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                      {cat?.label}
+                                      {sub && sub.label !== 'Général' && <span> · <em>{sub.label}</em></span>}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="chip" style={{ background: 'var(--bg-alt)', fontSize: 11 }}>
+                                  {promo?.label || '?'}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 

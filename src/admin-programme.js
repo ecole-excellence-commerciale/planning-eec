@@ -218,11 +218,36 @@ const PageProgramme = ({ data, onReload }) => {
           </select>
         </div>
         {programme && (
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
             <div className="text-xs text-muted">{programme.label}</div>
             <div className="text-sm" style={{ fontFamily: 'Gopher Heavy', color: 'var(--navy)' }}>
               {semainesPresentes.length} semaines · {creneaux.length} créneaux
             </div>
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 6, fontSize: 11 }}
+              onClick={async () => {
+                if (!confirm(
+                  `Ajouter une semaine au programme « ${programme.label} » ?\n\n` +
+                  `→ La semaine S${(programme.nombre_semaines || 0) + 1} sera créée à la fin.\n` +
+                  `→ Les promos en cours utilisant ce programme seront étendues d'une semaine.\n` +
+                  `→ Les affectations déjà faites (modules, intervenants) ne seront PAS modifiées.`
+                )) return;
+                try {
+                  const res = await db.addWeekToProgramme(programme.id);
+                  toast(
+                    `Semaine S${res.nouvelleSemaineNum} ajoutée` +
+                    (res.promosEtendues > 0 ? ` · ${res.promosEtendues} promo(s) étendue(s)` : ''),
+                    'success'
+                  );
+                  onReload();
+                  // Rouvrir la nouvelle semaine
+                  setOpenSemaines(s => ({ ...s, [res.nouvelleSemaineNum]: true }));
+                } catch (e) {
+                  console.error(e);
+                  toast(e.message || 'Erreur', 'error');
+                }
+              }}>
+              <Icon name="plus" size={11} /> Ajouter une semaine
+            </button>
           </div>
         )}
       </div>

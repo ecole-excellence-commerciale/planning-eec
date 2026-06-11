@@ -570,7 +570,7 @@ const PagePlanning = ({ data, onReload }) => {
                                                 <span style={{ fontWeight: 600 }}>{interv.prenom} {interv.nom}</span>
                                                 {conflits && (
                                                   <span
-                                                    title={'⚠ Conflit : aussi sur ' + conflits.join(', ')}
+                                                    title={'Déjà affecté en parallèle : ' + conflits.join(', ')}
                                                     style={{ marginLeft: 'auto', color: '#d97706', fontWeight: 700 }}>⚠</span>
                                                 )}
                                               </div>
@@ -1033,11 +1033,11 @@ const OngletIntervenant = ({
                     ✓ dispo
                   </span>
                 )}
-                {/* Conflit */}
+                {/* Déjà affecté ailleurs sur ce créneau */}
                 {c.hasConflit && (
-                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fff3cd', color: '#856404', fontWeight: 600 }}
-                    title={'⚠ Déjà assigné : ' + c.conflitsListe.join(', ')}>
-                    ⚠ conflit
+                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fef3e8', color: '#9a6a14', fontWeight: 600 }}
+                    title={'Déjà affecté sur ' + c.conflitsListe.join(', ') + ' au même créneau'}>
+                    ⓘ déjà affecté {c.conflitsListe.length === 1 ? c.conflitsListe[0] : ''}
                   </span>
                 )}
                 {isCurrent && <Icon name="check" size={14} />}
@@ -1226,9 +1226,9 @@ const ModalAffectationBulk = ({
                     </span>
                   )}
                   {c.nbConflits > 0 && (
-                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fff3cd', color: '#856404', fontWeight: 600 }}
-                      title={`Déjà assigné sur ${c.nbConflits} créneaux concernés (${c.conflitsPromos.join(', ')})`}>
-                      ⚠ {c.nbConflits} conflit{c.nbConflits > 1 ? 's' : ''}
+                    <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fef3e8', color: '#9a6a14', fontWeight: 600 }}
+                      title={`Déjà affecté sur ${c.nbConflits} des créneaux sélectionnés (${c.conflitsPromos.join(', ')})`}>
+                      ⓘ déjà affecté ×{c.nbConflits}
                     </span>
                   )}
                 </div>

@@ -30,6 +30,18 @@ const PagePlanning = ({ data, onReload }) => {
   const promo = promos.find(p => p.id === selectedPromoId) || null;
   const niveau = promo ? niveaux.find(n => n.id === promo.niveau_id) : null;
 
+  // Catégories et modules filtrés par le niveau de la promo
+  // (les promos Bac+2 ne voient que les modules Bac+2, idem Mastère)
+  const categoriesNiveau = useMemo(
+    () => promo ? categories.filter(c => c.niveau_id === promo.niveau_id) : categories,
+    [categories, promo]
+  );
+  const modulesNiveau = useMemo(() => {
+    if (!promo) return modules;
+    const catIds = new Set(categoriesNiveau.map(c => c.id));
+    return modules.filter(m => catIds.has(m.categorie_id));
+  }, [modules, categoriesNiveau, promo]);
+
   // Chargement du planning + assignations inter-promos (pour détecter les conflits)
   const [planning, setPlanning] = useState([]);
   const [assignationsAutres, setAssignationsAutres] = useState([]); // {intervenant_id, promo_id, date_jour, periode}
@@ -658,8 +670,8 @@ const PagePlanning = ({ data, onReload }) => {
           editing={editing}
           promo={promo}
           niveau={niveau}
-          categories={categories}
-          modules={modules}
+          categories={categoriesNiveau}
+          modules={modulesNiveau}
           intervenants={intervenants || []}
           disposIntervenants={disposIntervenants}
           assignationsAutres={assignationsAutres}
@@ -746,8 +758,8 @@ const PagePlanning = ({ data, onReload }) => {
         <ModalAffectationModuleBulk
           selectedCells={selectedCellsList}
           promo={promo}
-          categories={categories}
-          modules={modules}
+          categories={categoriesNiveau}
+          modules={modulesNiveau}
           sousCategorieById={sousCategorieById}
           categorieById={categorieById}
           onAssign={bulkAssignModule}
@@ -862,8 +874,8 @@ const ModalEditeurCreneau = ({
         {activeTab === 'module' ? (
           <OngletModule
             editing={editing}
-            categories={categories}
-            modules={modules}
+            categories={categoriesNiveau}
+            modules={modulesNiveau}
             onSaveModule={onSaveModule}
             onClearModule={onClearModule}
             onClose={onClose}

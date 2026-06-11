@@ -82,9 +82,9 @@ window.db = {
     return data;
   },
 
-  async addCategorie(label, ordre) {
+  async addCategorie(label, ordre, niveauId) {
     const { data, error } = await _client
-      .from('categories').insert({ label, ordre }).select().single();
+      .from('categories').insert({ label, ordre, niveau_id: niveauId }).select().single();
     if (error) throw error;
     return data;
   },

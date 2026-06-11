@@ -931,7 +931,8 @@ const PageParametres = ({ data, onReload }) => {
   };
   const addCat = async () => {
     if (!newCatText.trim()) { setShowAddCat(false); return; }
-    await db.addCategorie(newCatText.trim(), categories.length + 1);
+    if (!selectedNiveauId) { toast('Choisis un niveau d\'abord', 'error'); return; }
+    await db.addCategorie(newCatText.trim(), sortedCats.length + 1, selectedNiveauId);
     toast('Catégorie ajoutée', 'success');
     setNewCatText(''); setShowAddCat(false); onReload();
   };
@@ -1038,8 +1039,34 @@ const PageParametres = ({ data, onReload }) => {
     }
   };
 
-  // ---- TRI : catégories triées par ordre ----
-  const sortedCats = [...categories].sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+  // ---- Sélection du niveau pour filtrer les catégories ----
+  // Par défaut : 1er niveau dans l'ordre (Bac+2 si présent)
+  const [selectedNiveauId, setSelectedNiveauId] = useState(() => {
+    const sorted = [...(niveaux || [])].sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+    return sorted[0]?.id || null;
+  });
+
+  // Si les niveaux sont chargés après le premier rendu, initialiser
+  useEffect(() => {
+    if (!selectedNiveauId && niveaux && niveaux.length > 0) {
+      const sorted = [...niveaux].sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+      setSelectedNiveauId(sorted[0].id);
+    }
+  }, [niveaux, selectedNiveauId]);
+
+  // ---- TRI : catégories triées par ordre, filtrées par niveau sélectionné ----
+  const sortedCats = useMemo(() => {
+    if (!selectedNiveauId) return [];
+    return [...categories]
+      .filter(c => c.niveau_id === selectedNiveauId)
+      .sort((a, b) => (a.ordre || 0) - (b.ordre || 0));
+  }, [categories, selectedNiveauId]);
+
+  // Compteur de modules pour le niveau sélectionné
+  const nbModulesNiveau = useMemo(() => {
+    const catIds = new Set(sortedCats.map(c => c.id));
+    return modules.filter(m => catIds.has(m.categorie_id)).length;
+  }, [modules, sortedCats]);
 
   return (
     <div className="page-content">
@@ -1075,12 +1102,40 @@ const PageParametres = ({ data, onReload }) => {
         <div className="card-header" style={{ marginBottom: 12 }}>
           <div className="card-title" style={{ marginBottom: 0 }}>Catégories & modules</div>
           <div className="flex gap-8" style={{ alignItems: 'center' }}>
-            <span className="text-xs text-muted">{categories.length} catégories · {modules.length} modules</span>
+            <span className="text-xs text-muted">{sortedCats.length} catégorie{sortedCats.length > 1 ? 's' : ''} · {nbModulesNiveau} module{nbModulesNiveau > 1 ? 's' : ''}</span>
             <button className="btn btn-primary btn-sm" onClick={() => { setShowAddCat(true); setNewCatText(''); }}>
               <Icon name="plus" size={12} /> Nouvelle catégorie
             </button>
           </div>
         </div>
+
+        {/* Onglets niveau */}
+        {niveaux.length > 0 && (
+          <div className="flex gap-8 mb-16" style={{ borderBottom: '1px solid var(--border)' }}>
+            {[...niveaux].sort((a, b) => (a.ordre || 0) - (b.ordre || 0)).map(n => {
+              const isActive = selectedNiveauId === n.id;
+              const nbCatNiveau = categories.filter(c => c.niveau_id === n.id).length;
+              return (
+                <div key={n.id}
+                  onClick={() => setSelectedNiveauId(n.id)}
+                  style={{
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    borderBottom: isActive ? '2px solid var(--navy)' : '2px solid transparent',
+                    marginBottom: -1,
+                    fontWeight: isActive ? 600 : 500,
+                    color: isActive ? 'var(--navy)' : 'var(--text-muted)',
+                    fontSize: 13,
+                    transition: 'all 0.15s',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                  {n.label}
+                  <span className="text-xs text-muted" style={{ fontWeight: 400 }}>({nbCatNiveau})</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className="text-sm text-muted mb-16">
           Hiérarchie : <strong>Catégorie</strong> → <strong>Sous-catégorie</strong> → <strong>Modules</strong>.

@@ -86,6 +86,17 @@ const PageProgramme = ({ data, onReload }) => {
   // Programme correspondant au niveau choisi
   const programme = programmes.find(p => p.niveau_id === selectedNiveauId) || null;
 
+  // Catégories et modules filtrés par le niveau du programme sélectionné
+  const categoriesNiveau = useMemo(
+    () => selectedNiveauId ? categories.filter(c => c.niveau_id === selectedNiveauId) : categories,
+    [categories, selectedNiveauId]
+  );
+  const modulesNiveau = useMemo(() => {
+    if (!selectedNiveauId) return modules;
+    const catIds = new Set(categoriesNiveau.map(c => c.id));
+    return modules.filter(m => catIds.has(m.categorie_id));
+  }, [modules, categoriesNiveau, selectedNiveauId]);
+
   // Charger les créneaux du programme sélectionné
   const [creneaux, setCreneaux] = useState([]);
   const [loadingCreneaux, setLoadingCreneaux] = useState(false);
@@ -494,8 +505,8 @@ const PageProgramme = ({ data, onReload }) => {
       {editing && (
         <ModalChoixModule
           editing={editing}
-          categories={categories}
-          modules={modules}
+          categories={categoriesNiveau}
+          modules={modulesNiveau}
           onSave={saveCreneauModule}
           onClear={() => saveCreneauModule(null)}
           onClose={() => setEditing(null)}
@@ -536,8 +547,8 @@ const PageProgramme = ({ data, onReload }) => {
         <ModalAffectationModuleProgrammeBulk
           selectedCells={selectedCellsList}
           programme={programme}
-          categories={categories}
-          modules={modules}
+          categories={categoriesNiveau}
+          modules={modulesNiveau}
           onAssign={bulkAssignModule}
           onClose={() => setBulkModuleModalOpen(false)}
         />

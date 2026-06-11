@@ -874,8 +874,8 @@ const ModalEditeurCreneau = ({
         {activeTab === 'module' ? (
           <OngletModule
             editing={editing}
-            categories={categoriesNiveau}
-            modules={modulesNiveau}
+            categories={categories}
+            modules={modules}
             onSaveModule={onSaveModule}
             onClearModule={onClearModule}
             onClose={onClose}

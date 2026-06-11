@@ -109,6 +109,63 @@ const PageProgramme = ({ data, onReload }) => {
   const [openSemaines, setOpenSemaines] = useState({});
   const toggleSemaine = (num) => setOpenSemaines(s => ({ ...s, [num]: !s[num] }));
 
+  // ─── Sélection multiple pour affectation bulk de modules ─────────────
+  const [selectionMode, setSelectionMode] = useState(false);
+  // Map cellKey ("num-jour-periode") → { creneauId|null, semaineNum, jour, periode, currentModuleId|null }
+  const [selectedCells, setSelectedCells] = useState(new Map());
+  const [bulkModuleModalOpen, setBulkModuleModalOpen] = useState(false);
+
+  // Reset si on change de programme
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedCells(new Map());
+    setBulkModuleModalOpen(false);
+  }, [programme?.id]);
+
+  const toggleCellSelection = (cellKey, cellInfo) => {
+    setSelectedCells(prev => {
+      const next = new Map(prev);
+      if (next.has(cellKey)) next.delete(cellKey);
+      else next.set(cellKey, cellInfo);
+      return next;
+    });
+  };
+  const clearSelection = () => setSelectedCells(new Map());
+  const exitSelectionMode = () => { setSelectionMode(false); setSelectedCells(new Map()); };
+
+  const selectedCellsList = useMemo(() => [...selectedCells.values()], [selectedCells]);
+
+  // Assignation en masse d'un module sur le programme-type
+  const bulkAssignModule = async (moduleId) => {
+    try {
+      const cells = selectedCellsList;
+      await Promise.all(cells.map(async c => {
+        if (c.creneauId) {
+          // Créneau existant → mise à jour (ou suppression si moduleId est null)
+          if (moduleId) {
+            await db.setCreneauModule(c.creneauId, moduleId);
+          } else {
+            await db.deleteCreneau(c.creneauId);
+          }
+        } else if (moduleId) {
+          // Pas de créneau et on veut un module : création
+          await db.addCreneau(programme.id, c.semaineNum, c.jour, c.periode, moduleId);
+        }
+      }));
+      toast(
+        moduleId
+          ? `${cells.length} créneau${cells.length > 1 ? 'x' : ''} affecté${cells.length > 1 ? 's' : ''}`
+          : `Module retiré sur ${cells.filter(c => c.creneauId).length} créneau${cells.filter(c => c.creneauId).length > 1 ? 'x' : ''}`,
+        'success'
+      );
+      setBulkModuleModalOpen(false);
+      exitSelectionMode();
+      onReload();
+    } catch (e) {
+      console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
   // Index : modules et catégories par id
   const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
   const categorieById = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
@@ -248,9 +305,22 @@ const PageProgramme = ({ data, onReload }) => {
               }}>
               <Icon name="plus" size={11} /> Ajouter une semaine
             </button>
+            <button
+              className={selectionMode ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm'}
+              onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+              style={{ marginTop: 6, marginLeft: 6, fontSize: 11 }}>
+              {selectionMode ? '✗ Quitter la sélection' : '☑ Sélection multiple'}
+            </button>
           </div>
         )}
       </div>
+
+      {selectionMode && (
+        <div style={{ background: 'var(--cyan-light)', border: '1px solid var(--cyan)', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: 'var(--navy)' }}>
+          <strong>Mode sélection actif :</strong> clique sur les cases (vides ou occupées) pour les ajouter à la sélection.
+          La barre en bas te permettra ensuite d'y affecter le même module en un clic.
+        </div>
+      )}
 
       {/* Cas : aucun programme pour ce niveau → proposer d'en créer un */}
       {!programme && selectedNiveauId && (
@@ -335,7 +405,9 @@ const PageProgramme = ({ data, onReload }) => {
                             {[1, 2, 3, 4, 5].map(jour => {
                               const cr = findCreneau(num, jour, periode);
                               const info = cr ? moduleInfo(cr.module_id) : null;
-                              const style = info ? {
+                              const cellKey = `${num}-${jour}-${periode}`;
+                              const isSelected = selectionMode && selectedCells.has(cellKey);
+                              const baseStyle = info ? {
                                 background: info.couleur.bg,
                                 color: info.couleur.fg,
                                 border: '1px solid ' + info.couleur.border,
@@ -344,21 +416,50 @@ const PageProgramme = ({ data, onReload }) => {
                                 color: 'var(--text-muted)',
                                 border: '1px dashed var(--border)',
                               };
+                              const selStyle = isSelected ? {
+                                outline: '3px solid var(--cyan)',
+                                outlineOffset: -2,
+                              } : {};
                               return (
-                                <td key={jour} style={{ padding: 0 }}>
+                                <td key={jour} style={{ padding: 0, position: 'relative' }}>
                                   <div
-                                    onClick={() => setEditing({
-                                      semaineNum: num, jour, periode,
-                                      creneauId: cr?.id || null,
-                                      currentModuleId: cr?.module_id || null,
-                                    })}
+                                    onClick={() => {
+                                      if (selectionMode) {
+                                        toggleCellSelection(cellKey, {
+                                          creneauId: cr?.id || null,
+                                          semaineNum: num,
+                                          jour, periode,
+                                          currentModuleId: cr?.module_id || null,
+                                        });
+                                        return;
+                                      }
+                                      setEditing({
+                                        semaineNum: num, jour, periode,
+                                        creneauId: cr?.id || null,
+                                        currentModuleId: cr?.module_id || null,
+                                      });
+                                    }}
                                     style={{
-                                      ...style,
+                                      ...baseStyle,
+                                      ...selStyle,
                                       padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
                                       fontSize: 11, fontWeight: 500, minHeight: 44,
                                       display: 'flex', alignItems: 'center',
                                       lineHeight: 1.3,
                                     }}>
+                                    {/* Indicateur de sélection */}
+                                    {selectionMode && (
+                                      <div style={{
+                                        position: 'absolute', top: 4, right: 4,
+                                        width: 16, height: 16, borderRadius: 4,
+                                        border: '2px solid var(--cyan)',
+                                        background: isSelected ? 'var(--cyan)' : '#fff',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        color: '#fff', fontSize: 10, fontWeight: 700,
+                                      }}>
+                                        {isSelected ? '✓' : ''}
+                                      </div>
+                                    )}
                                     {info ? (
                                       <div style={{ overflow: 'hidden' }}>
                                         <div style={{ fontWeight: 600 }}>{info.module.label}</div>
@@ -398,6 +499,47 @@ const PageProgramme = ({ data, onReload }) => {
           onSave={saveCreneauModule}
           onClear={() => saveCreneauModule(null)}
           onClose={() => setEditing(null)}
+        />
+      )}
+
+      {/* Barre sticky en bas — mode sélection multiple */}
+      {selectionMode && selectedCells.size > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0,
+          background: 'var(--navy)', color: '#fff',
+          padding: '14px 24px',
+          display: 'flex', alignItems: 'center', gap: 12,
+          boxShadow: '0 -4px 16px rgba(0,0,0,0.15)',
+          zIndex: 50,
+        }}>
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 16 }}>
+              {selectedCells.size} créneau{selectedCells.size > 1 ? 'x' : ''} sélectionné{selectedCells.size > 1 ? 's' : ''}
+            </strong>
+            <span style={{ marginLeft: 12, opacity: 0.8, fontSize: 12 }}>
+              Tous recevront le même module
+            </span>
+          </div>
+          <button className="btn btn-ghost" onClick={clearSelection}
+            style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.3)' }}>
+            Tout désélectionner
+          </button>
+          <button className="btn btn-primary" onClick={() => setBulkModuleModalOpen(true)}
+            style={{ background: 'var(--cyan)', color: 'var(--navy)', borderColor: 'var(--cyan)' }}>
+            <Icon name="plus" size={14} /> Assigner un module
+          </button>
+        </div>
+      )}
+
+      {/* MODALE : affectation en masse d'un module */}
+      {bulkModuleModalOpen && (
+        <ModalAffectationModuleProgrammeBulk
+          selectedCells={selectedCellsList}
+          programme={programme}
+          categories={categories}
+          modules={modules}
+          onAssign={bulkAssignModule}
+          onClose={() => setBulkModuleModalOpen(false)}
         />
       )}
     </div>
@@ -496,6 +638,114 @@ const ModalChoixModule = ({ editing, categories, modules, onSave, onClear, onClo
           {editing.currentModuleId && (
             <button className="btn btn-ghost" onClick={onClear} style={{ color: 'var(--danger)' }}>
               <Icon name="x" size={12} /> Retirer le module
+            </button>
+          )}
+          <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Annuler</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
+// MODALE — affectation en masse d'un module à plusieurs créneaux
+// (programme-type, ne modifie pas les promos en cours)
+// ============================================================
+const ModalAffectationModuleProgrammeBulk = ({
+  selectedCells, programme, categories, modules, onAssign, onClose,
+}) => {
+  const [search, setSearch] = useState('');
+  const [selectedCatId, setSelectedCatId] = useState('all');
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return modules
+      .filter(m => selectedCatId === 'all' || m.categorie_id === selectedCatId)
+      .filter(m => !q || m.label.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [modules, search, selectedCatId]);
+
+  const grouped = useMemo(() => {
+    const map = {};
+    filtered.forEach(m => {
+      const cat = categories.find(c => c.id === m.categorie_id);
+      const catLabel = cat?.label || '— Sans catégorie —';
+      (map[catLabel] = map[catLabel] || []).push(m);
+    });
+    return map;
+  }, [filtered, categories]);
+
+  const N = selectedCells.length;
+  const nbAvecModuleExistant = selectedCells.filter(c => c.creneauId).length;
+  const nbCasesVides = N - nbAvecModuleExistant;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: 720, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-head">
+          <div>
+            <h3 style={{ marginBottom: 4 }}>
+              Affecter un module à {N} créneau{N > 1 ? 'x' : ''} du programme
+            </h3>
+            <div className="text-xs text-muted">
+              ⓘ Programme <strong>{programme?.label}</strong>. Cette modification s'applique au squelette pédagogique et n'affecte <strong>pas</strong> les promos en cours.
+              {nbAvecModuleExistant > 0 && nbCasesVides > 0 && (
+                <> Le module sera <strong>remplacé</strong> sur {nbAvecModuleExistant} case{nbAvecModuleExistant > 1 ? 's' : ''} et <strong>créé</strong> sur {nbCasesVides} case{nbCasesVides > 1 ? 's' : ''} vide{nbCasesVides > 1 ? 's' : ''}.</>
+              )}
+            </div>
+          </div>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        <div className="flex gap-8 mb-16">
+          <div style={{ position: 'relative', flex: 1 }}>
+            <input type="search" placeholder="Rechercher un module…" value={search}
+              autoFocus onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
+            <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+              <Icon name="search" size={14} />
+            </div>
+          </div>
+          <select value={selectedCatId} onChange={e => setSelectedCatId(e.target.value)}>
+            <option value="all">Toutes les catégories</option>
+            {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, border: '1px solid var(--border)', borderRadius: 6 }}>
+          {Object.keys(grouped).length === 0 ? (
+            <div className="text-muted text-sm" style={{ padding: 24, textAlign: 'center' }}>
+              Aucun module ne correspond.
+            </div>
+          ) : Object.entries(grouped).map(([catLabel, mods]) => {
+            const col = couleurCategorie(catLabel);
+            return (
+              <div key={catLabel}>
+                <div style={{ padding: '6px 12px', background: col.bg, color: col.fg, fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                  {catLabel}
+                </div>
+                {mods.map(m => (
+                  <div key={m.id}
+                    onClick={() => onAssign(m.id)}
+                    style={{
+                      padding: '8px 14px', cursor: 'pointer', background: '#fff',
+                      borderBottom: '1px solid var(--bg-alt)',
+                      fontSize: 13,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-alt)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                    {m.label}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="modal-foot">
+          {nbAvecModuleExistant > 0 && (
+            <button className="btn btn-ghost" onClick={() => onAssign(null)} style={{ color: 'var(--danger)' }}>
+              <Icon name="x" size={12} /> Retirer le module des créneaux sélectionnés
             </button>
           )}
           <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>Annuler</button>

@@ -243,6 +243,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const [tauxEdit, setTauxEdit] = useState('');
   const [disposPerso, setDisposPerso] = useState([]);
   const [assignations, setAssignations] = useState([]); // Toutes les interventions planifiées
+  // Filtre de période sur l'onglet Interventions (bornes ISO incluses, '' = pas de borne)
+  const [periodeFiltre, setPeriodeFiltre] = useState({ debut: '', fin: '' });
   // Édition de l'identité (mode édition + valeurs du formulaire)
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState({ prenom: '', nom: '', email: '', telephone: '', ville: '' });
@@ -263,6 +265,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
     setAssignations(await db.getAllAssignationsIntervenant(intervenantId));
   };
   useEffect(() => { load(); }, [intervenantId]);
+  // Repartir d'une période vierge quand on ouvre une autre fiche
+  useEffect(() => { setPeriodeFiltre({ debut: '', fin: '' }); }, [intervenantId]);
 
   if (!inter) return <div className="page-content"><div className="text-muted">Chargement…</div></div>;
 
@@ -504,8 +508,34 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                 const sousCategorieById = Object.fromEntries(sousCategories.map(s => [s.id, s]));
                 const categorieById = Object.fromEntries(categories.map(c => [c.id, c]));
                 const promoById = Object.fromEntries(promos.map(p => [p.id, p]));
-                // Trier par date et grouper par mois
-                const sorted = [...assignations].sort((a, b) =>
+
+                // Heures par demi-journée (dérivé de HEURES_PAR_JOUR pour rester cohérent)
+                const HEURES_DEMI = (window.HEURES_PAR_JOUR || 7) / 2;
+
+                // Bornes min/max de toutes les interventions (pour les <input> et presets)
+                const toutesDates = assignations.map(a => a.date_jour).sort();
+                const minDate = toutesDates[0];
+                const maxDate = toutesDates[toutesDates.length - 1];
+
+                // Étendue de dates par promo (raccourci « facturer une promo »)
+                const promoRanges = {};
+                for (const a of assignations) {
+                  const r = promoRanges[a.promo_id] || { min: a.date_jour, max: a.date_jour };
+                  if (a.date_jour < r.min) r.min = a.date_jour;
+                  if (a.date_jour > r.max) r.max = a.date_jour;
+                  promoRanges[a.promo_id] = r;
+                }
+
+                // Appliquer le filtre de période (bornes incluses, comparaison ISO directe)
+                const filtered = assignations.filter(a => {
+                  if (periodeFiltre.debut && a.date_jour < periodeFiltre.debut) return false;
+                  if (periodeFiltre.fin && a.date_jour > periodeFiltre.fin) return false;
+                  return true;
+                });
+                const filtreActif = !!(periodeFiltre.debut || periodeFiltre.fin);
+
+                // Trier + grouper par mois LE SOUS-ENSEMBLE FILTRÉ
+                const sorted = [...filtered].sort((a, b) =>
                   a.date_jour.localeCompare(b.date_jour) || (a.periode === 'am' ? -1 : 1)
                 );
                 const moisGroupes = {};
@@ -514,14 +544,74 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                   const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
                   (moisGroupes[key] = moisGroupes[key] || []).push(a);
                 }
+
+                // Heures + honoraires recalculés UNIQUEMENT sur la période filtrée
+                const nb = filtered.length;
+                const heures = nb * HEURES_DEMI;
+                const honoraires = inter.taux_horaire ? nb * inter.taux_horaire * HEURES_DEMI : 0;
+                const fmtJour = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
+
                 return (
                   <div>
-                    <div className="flex gap-8 mb-16" style={{ alignItems: 'center' }}>
-                      <span className="chip cyan">{assignations.length} créneau{assignations.length > 1 ? 'x' : ''}</span>
-                      <span className="text-xs text-muted">
-                        ≈ {(assignations.length * 3.5).toFixed(1)}h · {fmtEur(inter.taux_horaire ? assignations.length * inter.taux_horaire * 3.5 : 0)}
-                      </span>
+                    {/* Filtre de période */}
+                    <div style={{ background: 'var(--bg-alt, #f7f7fb)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', marginBottom: 14 }}>
+                      <div className="flex gap-8" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <div className="label" style={{ fontSize: 10 }}>Du</div>
+                          <input type="date" value={periodeFiltre.debut} min={minDate} max={maxDate}
+                            onChange={e => setPeriodeFiltre(p => ({ ...p, debut: e.target.value }))} />
+                        </div>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <div className="label" style={{ fontSize: 10 }}>Au</div>
+                          <input type="date" value={periodeFiltre.fin} min={minDate} max={maxDate}
+                            onChange={e => setPeriodeFiltre(p => ({ ...p, fin: e.target.value }))} />
+                        </div>
+                        {filtreActif && (
+                          <button className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}
+                            onClick={() => setPeriodeFiltre({ debut: '', fin: '' })}>
+                            ✕ Réinitialiser
+                          </button>
+                        )}
+                      </div>
+                      {/* Raccourcis : toute la période + une puce par promo */}
+                      <div className="flex gap-8" style={{ flexWrap: 'wrap', marginTop: 8 }}>
+                        <button className="chip" style={{ cursor: 'pointer', border: 'none', background: !filtreActif ? 'var(--navy)' : 'var(--bg-alt)', color: !filtreActif ? '#fff' : 'var(--text-muted)' }}
+                          onClick={() => setPeriodeFiltre({ debut: '', fin: '' })}>
+                          Toute la période
+                        </button>
+                        {Object.keys(promoRanges).map(pid => {
+                          const p = promoById[pid];
+                          const r = promoRanges[pid];
+                          const actif = periodeFiltre.debut === r.min && periodeFiltre.fin === r.max;
+                          return (
+                            <button key={pid} className="chip" title={`${fmtJour(r.min)} → ${fmtJour(r.max)}`}
+                              style={{ cursor: 'pointer', border: 'none', background: actif ? 'var(--cyan)' : 'var(--bg-alt)', color: actif ? 'var(--navy)' : 'var(--text-muted)', fontWeight: actif ? 700 : 500 }}
+                              onClick={() => setPeriodeFiltre({ debut: r.min, fin: r.max })}>
+                              {p?.label || 'Promo ?'}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+
+                    {/* Récap heures + honoraires — sur la période filtrée */}
+                    <div className="flex gap-8 mb-16" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span className="chip cyan">{nb} créneau{nb > 1 ? 'x' : ''}</span>
+                      <span className="text-xs text-muted">
+                        ≈ {heures.toFixed(1)}h · {fmtEur(honoraires)}
+                      </span>
+                      {filtreActif && (
+                        <span className="text-xs" style={{ color: 'var(--navy)', fontWeight: 600 }}>
+                          · {periodeFiltre.debut ? fmtJour(periodeFiltre.debut) : '…'} → {periodeFiltre.fin ? fmtJour(periodeFiltre.fin) : '…'}
+                        </span>
+                      )}
+                    </div>
+
+                    {nb === 0 && (
+                      <div className="text-muted text-sm" style={{ padding: '16px 0', textAlign: 'center' }}>
+                        Aucune intervention sur la période sélectionnée.
+                      </div>
+                    )}
                     {Object.keys(moisGroupes).sort().map(moisKey => {
                       const items = moisGroupes[moisKey];
                       const [y, m] = moisKey.split('-');

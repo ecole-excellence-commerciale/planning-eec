@@ -421,7 +421,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                       const j = d.getDay();
                       const decal = j === 0 ? -6 : 1 - j;
                       d.setDate(d.getDate() + decal);
-                      return d.toISOString().slice(0, 10);
+                      return isoDate(d); // local, évite le décalage UTC J-1
                     };
                     const groupes = {};
                     for (const dispo of disposPerso) {

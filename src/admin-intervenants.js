@@ -397,6 +397,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
             <div className={'tab ' + (tab === 'interventions' ? 'active' : '')} onClick={() => setTab('interventions')}>
               Interventions {assignations.length > 0 && <span className="chip cyan text-xs" style={{ marginLeft: 4 }}>{assignations.length}</span>}
             </div>
+            <div className={'tab ' + (tab === 'documents' ? 'active' : '')} onClick={() => setTab('documents')}>Documents</div>
             <div className={'tab ' + (tab === 'profil' ? 'active' : '')} onClick={() => setTab('profil')}>Profil</div>
             <div className={'tab ' + (tab === 'actions' ? 'active' : '')} onClick={() => setTab('actions')}>Actions</div>
           </div>
@@ -659,6 +660,13 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                   </div>
                 );
               })()}
+            </div>
+          )}
+
+          {tab === 'documents' && (
+            <div className="card">
+              <div className="card-title">Documents (CV, diplômes, NDA)</div>
+              <GestionDocuments mode="admin" intervenantId={inter.id} />
             </div>
           )}
 

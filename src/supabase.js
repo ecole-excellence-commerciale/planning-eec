@@ -650,6 +650,20 @@ window.db = {
     return data;
   },
 
+  // Synchroniser en masse les modules du planning d'une promo depuis le programme-type.
+  // rows = [{ promo_id, semaine_num, date_jour, periode, module_id }]
+  // UPSERT atomique sur (promo_id, date_jour, periode) — pattern validé :
+  // l'intervenant_id existant est PRÉSERVÉ car non spécifié dans le payload.
+  // Un seul appel réseau quel que soit le nombre de cases à mettre à jour.
+  async syncPlanningModules(rows) {
+    if (!rows || rows.length === 0) return 0;
+    const { error } = await _client
+      .from('promo_planning')
+      .upsert(rows, { onConflict: 'promo_id,date_jour,periode' });
+    if (error) throw error;
+    return rows.length;
+  },
+
   // Assigner un intervenant à un créneau (ou retirer si null)
   async setPromoPlanningIntervenant(planningId, intervenantId) {
     const { error } = await _client
@@ -935,5 +949,86 @@ window.db = {
       p_token: token, p_campagne: campagneId, p_semaine: semaine, p_commentaire: commentaire
     });
     if (error) throw error;
+  },
+
+  // ----------------------------------------------------------
+  // DOCUMENTS INTERVENANT (CV / diplômes / NDA)
+  // Bucket privé 'intervenant-docs'.
+  //   • Admin (session authentifiée) → accès direct ci-dessous.
+  //   • Intervenant (token)          → via l'Edge Function 'intervenant-docs'.
+  // ----------------------------------------------------------
+  async docsLister(intervenantId) {
+    const { data, error } = await _client.from('intervenant_documents')
+      .select('*').eq('intervenant_id', intervenantId).order('created_at', { ascending: true });
+    if (error) throw error;
+    return data;
+  },
+  async docsUploadAdmin(intervenantId, type, file) {
+    const path = `${intervenantId}/${type}/${crypto.randomUUID()}.pdf`;
+    const up = await _client.storage.from('intervenant-docs')
+      .upload(path, file, { contentType: 'application/pdf', upsert: false });
+    if (up.error) throw up.error;
+    // CV et NDA : un seul fichier → retirer les anciens du même type
+    if (type === 'cv' || type === 'nda') {
+      const { data: olds } = await _client.from('intervenant_documents')
+        .select('id, file_path').eq('intervenant_id', intervenantId).eq('type', type);
+      if (olds && olds.length) {
+        await _client.storage.from('intervenant-docs').remove(olds.map(o => o.file_path));
+        await _client.from('intervenant_documents').delete().in('id', olds.map(o => o.id));
+      }
+    }
+    const { data, error } = await _client.from('intervenant_documents').insert({
+      intervenant_id: intervenantId, type, file_path: path,
+      file_name: file.name || 'document.pdf', taille: file.size, uploaded_by: 'admin',
+    }).select().single();
+    if (error) throw error;
+    return data;
+  },
+  async docsSignedUrl(filePath) {
+    const { data, error } = await _client.storage.from('intervenant-docs').createSignedUrl(filePath, 300);
+    if (error) throw error;
+    return data.signedUrl;
+  },
+  async docsDelete(doc) {
+    await _client.storage.from('intervenant-docs').remove([doc.file_path]);
+    const { error } = await _client.from('intervenant_documents').delete().eq('id', doc.id);
+    if (error) throw error;
+  },
+
+  // --- Côté intervenant : passerelle Edge Function (token) ---
+  _docsEdgeUrl() { return window.EEC_CONFIG.SUPABASE_URL + '/functions/v1/intervenant-docs'; },
+  async _docsEdgeCall(payload, isForm) {
+    const key = window.EEC_CONFIG.SUPABASE_ANON_KEY;
+    const opts = { method: 'POST', headers: { Authorization: `Bearer ${key}`, apikey: key } };
+    if (isForm) {
+      opts.body = payload; // FormData : le navigateur fixe le bon Content-Type
+    } else {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(payload);
+    }
+    const res = await fetch(this._docsEdgeUrl(), opts);
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || 'Erreur serveur');
+    return out;
+  },
+  async docsListerParToken(token) {
+    const r = await this._docsEdgeCall({ action: 'list', token });
+    return r.documents || [];
+  },
+  async docsUploadParToken(token, type, file) {
+    const fd = new FormData();
+    fd.append('action', 'upload');
+    fd.append('token', token);
+    fd.append('type', type);
+    fd.append('file', file);
+    const r = await this._docsEdgeCall(fd, true);
+    return r.document;
+  },
+  async docsSignedUrlParToken(token, docId) {
+    const r = await this._docsEdgeCall({ action: 'sign', token, doc_id: docId });
+    return r.url;
+  },
+  async docsDeleteParToken(token, docId) {
+    await this._docsEdgeCall({ action: 'delete', token, doc_id: docId });
   },
 };

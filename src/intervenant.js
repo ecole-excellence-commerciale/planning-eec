@@ -2,6 +2,138 @@
 // PAGE INTERVENANT (publique, accès par token ?i=...)
 // ============================================================
 
+// ------------------------------------------------------------
+// COMPOSANT PARTAGÉ — gestion des documents d'un intervenant
+// (CV, diplômes, NDA). Utilisé côté admin ET côté espace intervenant.
+//   mode = 'admin'       → accès direct (session authentifiée)
+//   mode = 'intervenant' → via Edge Function (token)
+// ------------------------------------------------------------
+const DOC_CATEGORIES = [
+  { type: 'cv', label: 'CV', multiple: false, icon: '📄' },
+  { type: 'diplome', label: 'Diplômes', multiple: true, icon: '🎓' },
+  { type: 'nda', label: 'NDA', multiple: false, icon: '🔏' },
+];
+const DOC_MAX_BYTES = 10 * 1024 * 1024;
+
+const GestionDocuments = ({ mode, intervenantId, token }) => {
+  const toast = useToast();
+  const [docs, setDocs] = useState(null); // null = chargement
+  const [busy, setBusy] = useState(null); // type en cours d'upload
+  const fileInputs = useRef({});
+
+  const api = useMemo(() => {
+    if (mode === 'admin') {
+      return {
+        list: () => db.docsLister(intervenantId),
+        upload: (type, file) => db.docsUploadAdmin(intervenantId, type, file),
+        open: (doc) => db.docsSignedUrl(doc.file_path),
+        remove: (doc) => db.docsDelete(doc),
+      };
+    }
+    return {
+      list: () => db.docsListerParToken(token),
+      upload: (type, file) => db.docsUploadParToken(token, type, file),
+      open: (doc) => db.docsSignedUrlParToken(token, doc.id),
+      remove: (doc) => db.docsDeleteParToken(token, doc.id),
+    };
+  }, [mode, intervenantId, token]);
+
+  const reload = async () => {
+    try { setDocs(await api.list()); }
+    catch (e) { console.error(e); setDocs([]); toast('Impossible de charger les documents', 'error'); }
+  };
+  useEffect(() => { reload(); }, [mode, intervenantId, token]);
+
+  const onFile = async (type, e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // permet de re-sélectionner le même fichier ensuite
+    if (!file) return;
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) { toast('PDF uniquement', 'error'); return; }
+    if (file.size > DOC_MAX_BYTES) { toast('Fichier trop volumineux (max 10 Mo)', 'error'); return; }
+    setBusy(type);
+    try {
+      await api.upload(type, file);
+      await reload();
+      toast('Document importé', 'success');
+    } catch (err) {
+      console.error(err);
+      toast(err && err.message ? err.message : "Échec de l'import", 'error');
+    } finally { setBusy(null); }
+  };
+
+  const ouvrir = async (doc) => {
+    try {
+      const url = await api.open(doc);
+      if (url) window.open(url, '_blank', 'noopener');
+    } catch (e) { console.error(e); toast("Impossible d'ouvrir le document", 'error'); }
+  };
+
+  const supprimer = async (doc) => {
+    if (!window.confirm(`Supprimer « ${doc.file_name} » ?`)) return;
+    try { await api.remove(doc); await reload(); toast('Document supprimé', 'success'); }
+    catch (e) { console.error(e); toast('Échec de la suppression', 'error'); }
+  };
+
+  const fmtDate = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
+  const fmtTaille = (o) => o == null ? '' : (o < 1024 * 1024 ? Math.round(o / 1024) + ' Ko' : (o / 1024 / 1024).toFixed(1) + ' Mo');
+
+  if (docs === null) return <div className="text-muted text-sm" style={{ padding: 16 }}>Chargement des documents…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {DOC_CATEGORIES.map(cat => {
+        const items = docs.filter(d => d.type === cat.type);
+        const remplace = !cat.multiple && items.length > 0;
+        return (
+          <div key={cat.type} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
+            <div className="flex-between" style={{ marginBottom: items.length ? 8 : 0, alignItems: 'center' }}>
+              <div style={{ fontWeight: 600, color: 'var(--navy)', fontSize: 14 }}>
+                {cat.icon} {cat.label}
+                {!cat.multiple && <span className="text-xs text-muted" style={{ fontWeight: 400 }}> · un seul fichier</span>}
+              </div>
+              <div>
+                <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }}
+                  ref={el => fileInputs.current[cat.type] = el}
+                  onChange={e => onFile(cat.type, e)} />
+                <button className="btn btn-secondary btn-sm" disabled={busy === cat.type}
+                  onClick={() => fileInputs.current[cat.type] && fileInputs.current[cat.type].click()}>
+                  {busy === cat.type ? 'Import…' : (remplace ? 'Remplacer' : 'Importer un PDF')}
+                </button>
+              </div>
+            </div>
+            {items.length === 0 ? (
+              <div className="text-xs text-muted">Aucun fichier.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {items.map(doc => (
+                  <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 8px', background: 'var(--bg-alt)', borderRadius: 6 }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={doc.file_name}>
+                      {doc.file_name}
+                    </span>
+                    <span className="text-xs text-muted" style={{ whiteSpace: 'nowrap' }}>
+                      {fmtTaille(doc.taille)} · {fmtDate(doc.created_at)}
+                      {doc.uploaded_by && <> · {doc.uploaded_by === 'admin' ? 'EEC' : 'intervenant'}</>}
+                    </span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => ouvrir(doc)}>Ouvrir</button>
+                    <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} title="Supprimer" onClick={() => supprimer(doc)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div className="text-xs text-muted">
+        PDF uniquement, 10 Mo max.{' '}
+        {mode === 'intervenant'
+          ? 'Tes documents restent confidentiels et ne sont visibles que par l’équipe EEC.'
+          : 'Stockés dans un espace privé à accès restreint.'}
+      </div>
+    </div>
+  );
+};
+
 const PageIntervenant = ({ token }) => {
   const toast = useToast();
   const run = useAsync();
@@ -183,6 +315,19 @@ const PageIntervenant = ({ token }) => {
             <button className="btn btn-primary" disabled={saving} onClick={() => handleSave('valide')}>
               <Icon name="check" size={14} /> {saving ? 'Enregistrement…' : 'Valider mes disponibilités'}
             </button>
+          </div>
+        </div>
+
+        {/* Mes documents (CV, diplômes, NDA) */}
+        <div className="week-card" style={{ marginTop: 24 }}>
+          <div className="week-card-head">
+            <div className="week-card-title">
+              Mes documents
+              <span className="dates">CV, diplômes, NDA — PDF, 10 Mo max</span>
+            </div>
+          </div>
+          <div style={{ padding: 16 }}>
+            <GestionDocuments mode="intervenant" token={token} />
           </div>
         </div>
 

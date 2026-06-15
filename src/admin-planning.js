@@ -21,6 +21,18 @@ const couleurCat = (typeof couleurCategorie !== 'undefined') ? couleurCategorie 
   };
 };
 
+// Couleurs du calque « disponibilités intervenant » (2 sélections max simultanées).
+// Choisies distinctes du navy/cyan de la charte et de l'orange des conflits,
+// pour rester lisibles en surimpression sur les pastilles de catégorie.
+const DISPO_OVERLAY_COLORS = ['#059669', '#7c3aed']; // émeraude, violet
+const withAlpha = (hex, a) => {
+  const n = hex.replace('#', '');
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
+
 const PagePlanning = ({ data, onReload }) => {
   const toast = useToast();
   const { promos, niveaux, categories, sousCategories = [], modules, intervenants, campagne } = data;
@@ -74,6 +86,7 @@ const PagePlanning = ({ data, onReload }) => {
 
   // Charger les dispos de la campagne actuelle
   useEffect(() => {
+    setDispoOverlayIds([]); // le calque repart à zéro si la campagne change
     if (!campagne) { setDisposIntervenants([]); return; }
     db.getDisposCampagne(campagne.id)
       .then(setDisposIntervenants)
@@ -107,6 +120,72 @@ const PagePlanning = ({ data, onReload }) => {
   const [selectedCells, setSelectedCells] = useState(new Map());
   const [bulkModalOpen, setBulkModalOpen] = useState(false);       // affectation intervenant
   const [bulkModuleModalOpen, setBulkModuleModalOpen] = useState(false); // affectation module
+
+  // ─── Synchronisation planning ← programme-type ────────────────────────
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  // Appliquer la sync : un seul upsert batch, puis rechargement du planning.
+  // Les intervenants déjà affectés sont préservés (non spécifiés dans le payload).
+  const appliquerSyncProgramme = async (rows) => {
+    try {
+      const n = await db.syncPlanningModules(rows);
+      const fresh = await db.getPromoPlanning(promo.id);
+      setPlanning(fresh);
+      setSyncModalOpen(false);
+      toast(`${n} créneau${n > 1 ? 'x' : ''} mis à jour depuis le programme`, 'success');
+    } catch (e) {
+      console.error(e);
+      toast('Erreur lors de la synchronisation', 'error');
+    }
+  };
+
+  // ─── Calque « disponibilités intervenant » (2 max) ────────────────────
+  // dispoOverlayIds : tableau ordonné d'intervenant_id (l'index → couleur).
+  const [dispoOverlayIds, setDispoOverlayIds] = useState([]);
+
+  const toggleDispoOverlay = (intervenantId) => {
+    setDispoOverlayIds(prev => {
+      if (prev.includes(intervenantId)) return prev.filter(id => id !== intervenantId);
+      if (prev.length >= 2) return prev; // plafond à 2 pour rester lisible
+      return [...prev, intervenantId];
+    });
+  };
+
+  // Intervenants ayant au moins une dispo sur la campagne courante (triés par nom).
+  // On propose en priorité ceux du niveau de la promo, mais sans exclure les autres.
+  const intervenantsAvecDispo = useMemo(() => {
+    const idsAvecDispo = new Set(disposIntervenants.map(d => d.intervenant_id));
+    return (intervenants || [])
+      .filter(i => idsAvecDispo.has(i.id))
+      .map(i => ({
+        ...i,
+        _duNiveau: niveau ? (i.niveaux || []).includes(niveau.id) : true,
+      }))
+      .sort((a, b) =>
+        (b._duNiveau - a._duNiveau) ||
+        (a.nom || '').localeCompare(b.nom || '') ||
+        (a.prenom || '').localeCompare(b.prenom || '')
+      );
+  }, [intervenants, disposIntervenants, niveau]);
+
+  // Pour chaque intervenant affiché en calque : un Set de clés "date|periode"
+  // → test O(1) par cellule. Recalculé seulement si la sélection ou les dispos changent.
+  const dispoSetsByIntervenant = useMemo(() => {
+    const map = {};
+    for (const id of dispoOverlayIds) {
+      map[id] = new Set(
+        disposIntervenants
+          .filter(d => d.intervenant_id === id)
+          .map(d => `${d.date}|${d.periode}`)
+      );
+    }
+    return map;
+  }, [dispoOverlayIds, disposIntervenants]);
+
+  // Couleur d'un intervenant selon sa position dans la sélection (0 ou 1).
+  const couleurDispo = (intervenantId) => {
+    const idx = dispoOverlayIds.indexOf(intervenantId);
+    return idx === -1 ? null : DISPO_OVERLAY_COLORS[idx];
+  };
 
   // Réinitialiser la sélection si on change de promo
   useEffect(() => {
@@ -413,16 +492,75 @@ const PagePlanning = ({ data, onReload }) => {
                       {creneauxAvecIntervenant} / {creneauxAvecModule} intervenants
                     </strong>
                   </div>
-                  <button
-                    className={selectionMode ? 'btn btn-primary' : 'btn btn-ghost'}
-                    onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
-                    style={{ marginTop: 8, fontSize: 11, padding: '6px 12px' }}>
-                    {selectionMode ? '✗ Quitter la sélection' : '☑ Sélection multiple'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setSyncModalOpen(true)}
+                      title="Mettre à jour ce planning depuis le programme-type"
+                      style={{ fontSize: 11, padding: '6px 12px' }}>
+                      🔄 Sync programme
+                    </button>
+                    <button
+                      className={selectionMode ? 'btn btn-primary' : 'btn btn-ghost'}
+                      onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+                      style={{ fontSize: 11, padding: '6px 12px' }}>
+                      {selectionMode ? '✗ Quitter la sélection' : '☑ Sélection multiple'}
+                    </button>
+                  </div>
                 </div>
               );
             })()}
           </div>
+
+          {/* Barre « Voir les disponibilités » — calque transparent (2 max) */}
+          {promo && intervenantsAvecDispo.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: 'var(--bg-alt, #f7f7fb)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px', marginBottom: 12 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--navy)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                👁 Voir les dispos
+              </span>
+              {/* Puces des intervenants affichés */}
+              {dispoOverlayIds.map(id => {
+                const it = intervenantById[id];
+                const col = couleurDispo(id);
+                if (!it) return null;
+                return (
+                  <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#fff', background: col, borderRadius: 999, padding: '4px 8px 4px 10px' }}>
+                    {it.prenom} {it.nom}
+                    <button onClick={() => toggleDispoOverlay(id)}
+                      title="Retirer du calque"
+                      style={{ background: 'rgba(255,255,255,0.25)', border: 'none', color: '#fff', borderRadius: 999, width: 16, height: 16, lineHeight: '14px', cursor: 'pointer', fontSize: 11, padding: 0 }}>
+                      ✕
+                    </button>
+                  </span>
+                );
+              })}
+              {/* Sélecteur d'ajout (désactivé à 2) */}
+              {dispoOverlayIds.length < 2 ? (
+                <select
+                  value=""
+                  onChange={e => { if (e.target.value) toggleDispoOverlay(e.target.value); }}
+                  style={{ fontSize: 12, maxWidth: 240 }}>
+                  <option value="">+ Ajouter un intervenant…</option>
+                  {intervenantsAvecDispo
+                    .filter(i => !dispoOverlayIds.includes(i.id))
+                    .map(i => (
+                      <option key={i.id} value={i.id}>
+                        {i.prenom} {i.nom}{i._duNiveau ? '' : ' (autre niveau)'}
+                      </option>
+                    ))}
+                </select>
+              ) : (
+                <span className="text-xs text-muted">Maximum 2 intervenants affichés — retirez-en un pour en ajouter un autre.</span>
+              )}
+              {dispoOverlayIds.length > 0 && (
+                <button className="btn btn-ghost" onClick={() => setDispoOverlayIds([])}
+                  style={{ fontSize: 11, padding: '4px 10px', marginLeft: 'auto' }}>
+                  Tout masquer
+                </button>
+              )}
+            </div>
+          )}
+
           {selectionMode && (
             <div style={{ background: 'var(--cyan-light)', border: '1px solid var(--cyan)', borderRadius: 6, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: 'var(--navy)' }}>
               <strong>Mode sélection actif :</strong> cliquez sur les cases (vides ou occupées) pour les ajouter à la sélection.
@@ -549,6 +687,10 @@ const PagePlanning = ({ data, onReload }) => {
                                 outlineOffset: -2,
                               } : {};
                               const draggable = !!(entry && info) && !selectionMode;
+                              // Calque dispos : quels intervenants sélectionnés sont dispo ici ?
+                              const dispoActifs = dateJour
+                                ? dispoOverlayIds.filter(id => dispoSetsByIntervenant[id]?.has(`${dateJour}|${periode}`))
+                                : [];
                               return (
                                 <td key={jourIdx} style={{ padding: 0, position: 'relative' }}>
                                   <div
@@ -649,6 +791,23 @@ const PagePlanning = ({ data, onReload }) => {
                                       <span style={{ fontStyle: 'italic', opacity: 0.5 }}>+ Ajouter</span>
                                     )}
                                   </div>
+                                  {/* Calque « disponibilités » — translucide, non bloquant */}
+                                  {dispoActifs.length > 0 && (
+                                    <div style={{
+                                      position: 'absolute', inset: 0, borderRadius: 6,
+                                      pointerEvents: 'none', overflow: 'hidden',
+                                      background: dispoActifs.length === 2
+                                        ? `linear-gradient(135deg, ${withAlpha(couleurDispo(dispoActifs[0]), 0.18)} 0 50%, ${withAlpha(couleurDispo(dispoActifs[1]), 0.18)} 50% 100%)`
+                                        : withAlpha(couleurDispo(dispoActifs[0]), 0.16),
+                                    }}>
+                                      {/* Liseré(s) en haut : un segment par intervenant dispo */}
+                                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 4, display: 'flex' }}>
+                                        {dispoActifs.map(id => (
+                                          <div key={id} style={{ flex: 1, background: couleurDispo(id) }} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
                                 </td>
                               );
                             })}
@@ -766,6 +925,192 @@ const PagePlanning = ({ data, onReload }) => {
           onClose={() => setBulkModuleModalOpen(false)}
         />
       )}
+
+      {/* Modale de synchronisation planning ← programme-type */}
+      {syncModalOpen && promo && (
+        <ModalSyncProgramme
+          promo={promo}
+          planning={planning}
+          moduleById={moduleById}
+          onApply={appliquerSyncProgramme}
+          onClose={() => setSyncModalOpen(false)}
+        />
+      )}
+    </div>
+  );
+};
+
+// ============================================================
+// MODALE — synchronisation du planning d'une promo depuis son programme-type
+// ============================================================
+// Diagnostic AVANT toute modification :
+//   🟢 cases vides du planning qui ont un module dans le programme → "à remplir"
+//   🟠 cases dont le module diffère du programme → "différentes" (écrasement opt-in)
+//   📌 cases avec un module mais rien dans le programme → JAMAIS touchées
+// Deux modes : "compléter" (vides uniquement, défaut) ou "aligner" (vides + différentes).
+// Les intervenants déjà affectés sont toujours conservés.
+const ModalSyncProgramme = ({ promo, planning, moduleById, onApply, onClose }) => {
+  const [creneaux, setCreneaux] = useState(null); // null = chargement en cours
+  const [erreur, setErreur] = useState(null);
+  const [mode, setMode] = useState('completer'); // 'completer' | 'aligner'
+  const [saving, setSaving] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+
+  // Charger le programme-type de la promo
+  useEffect(() => {
+    if (!promo.programme_type_id) {
+      setErreur("Cette promo n'est rattachée à aucun programme-type.");
+      return;
+    }
+    db.getProgrammeCreneaux(promo.programme_type_id)
+      .then(setCreneaux)
+      .catch(e => { console.error(e); setErreur('Impossible de charger le programme.'); });
+  }, [promo.id]);
+
+  // Diff planning ↔ programme (clé = semaine_num + jour de semaine + période)
+  const diff = useMemo(() => {
+    if (!creneaux) return null;
+    const pcByKey = {};
+    creneaux.forEach(c => { pcByKey[`${c.semaine_num}-${c.jour}-${c.periode}`] = c; });
+    const aRemplir = [], aEcraser = [], horsProgramme = [];
+    let identiques = 0;
+    for (const e of planning) {
+      const d = new Date(e.date_jour + 'T00:00:00');
+      const jour = d.getDay(); // 1 = lundi … 5 = vendredi (pas de week-end en planning)
+      const pc = pcByKey[`${e.semaine_num}-${jour}-${e.periode}`];
+      const target = pc?.module_id || null;
+      if (target && !e.module_id) aRemplir.push({ entry: e, target });
+      else if (target && e.module_id && target !== e.module_id) aEcraser.push({ entry: e, target });
+      else if (!target && e.module_id) horsProgramme.push(e);
+      else if (target && target === e.module_id) identiques++;
+    }
+    return { aRemplir, aEcraser, horsProgramme, identiques };
+  }, [creneaux, planning]);
+
+  const selection = diff
+    ? (mode === 'aligner' ? [...diff.aRemplir, ...diff.aEcraser] : diff.aRemplir)
+    : [];
+  const nbIntervenantsConserves = diff
+    ? diff.aEcraser.filter(({ entry }) => entry.intervenant_id).length
+    : 0;
+
+  const handleApply = async () => {
+    if (selection.length === 0) return;
+    const rows = selection.map(({ entry, target }) => ({
+      promo_id: promo.id,
+      semaine_num: entry.semaine_num,
+      date_jour: entry.date_jour,
+      periode: entry.periode,
+      module_id: target,
+    }));
+    setSaving(true);
+    try { await onApply(rows); } finally { setSaving(false); }
+  };
+
+  const fmtCase = (e) => {
+    const d = new Date(e.date_jour + 'T00:00:00');
+    return `S${String(e.semaine_num).padStart(2, '0')} · ${d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short' })} ${e.periode === 'am' ? 'matin' : 'a-m'}`;
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-head">
+          <div>
+            <h3 style={{ marginBottom: 4 }}>Synchroniser avec le programme</h3>
+            <div className="text-xs text-muted">
+              ⓘ Promo <strong>{promo.label}</strong> — le planning est comparé au programme-type,
+              puis seules les cases que vous validez ci-dessous sont mises à jour.
+              Les intervenants déjà affectés sont <strong>toujours conservés</strong>.
+            </div>
+          </div>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        {erreur && (
+          <div style={{ color: 'var(--danger)', fontSize: 13, padding: '16px 0' }}>{erreur}</div>
+        )}
+
+        {!erreur && !diff && (
+          <div className="text-muted text-sm" style={{ padding: 20 }}>Analyse du programme…</div>
+        )}
+
+        {!erreur && diff && (
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            {/* Diagnostic */}
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px', marginBottom: 14, fontSize: 13, lineHeight: 1.7 }}>
+              <div>🟢 <strong>{diff.aRemplir.length}</strong> case{diff.aRemplir.length > 1 ? 's' : ''} vide{diff.aRemplir.length > 1 ? 's' : ''} à remplir depuis le programme</div>
+              <div>🟠 <strong>{diff.aEcraser.length}</strong> case{diff.aEcraser.length > 1 ? 's' : ''} avec un module <em>différent</em> du programme</div>
+              <div className="text-muted">✓ {diff.identiques} déjà identique{diff.identiques > 1 ? 's' : ''} · 📌 {diff.horsProgramme.length} remplie{diff.horsProgramme.length > 1 ? 's' : ''} hors programme (jamais touchée{diff.horsProgramme.length > 1 ? 's' : ''})</div>
+            </div>
+
+            {diff.aRemplir.length === 0 && diff.aEcraser.length === 0 ? (
+              <div className="text-sm" style={{ padding: '8px 0', color: 'var(--navy)' }}>
+                ✓ Le planning est déjà à jour par rapport au programme. Rien à faire !
+              </div>
+            ) : (
+              <>
+                {/* Choix du mode */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer', fontSize: 13 }}>
+                    <input type="radio" name="syncmode" checked={mode === 'completer'}
+                      onChange={() => setMode('completer')} style={{ marginTop: 3 }} />
+                    <span>
+                      <strong>Compléter uniquement les cases vides</strong> ({diff.aRemplir.length})
+                      <div className="text-xs text-muted">Aucun module existant n'est modifié. Recommandé.</div>
+                    </span>
+                  </label>
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: diff.aEcraser.length === 0 ? 'not-allowed' : 'pointer', fontSize: 13, opacity: diff.aEcraser.length === 0 ? 0.5 : 1 }}>
+                    <input type="radio" name="syncmode" checked={mode === 'aligner'}
+                      disabled={diff.aEcraser.length === 0}
+                      onChange={() => setMode('aligner')} style={{ marginTop: 3 }} />
+                    <span>
+                      <strong>Aligner aussi les cases différentes</strong> ({diff.aRemplir.length + diff.aEcraser.length})
+                      <div className="text-xs text-muted">
+                        ⚠ Remplace le module sur {diff.aEcraser.length} case{diff.aEcraser.length > 1 ? 's' : ''} déjà remplie{diff.aEcraser.length > 1 ? 's' : ''}.
+                        {nbIntervenantsConserves > 0 && <> L'intervenant reste affecté sur {nbIntervenantsConserves} d'entre elles : vérifiez qu'il est qualifié pour le nouveau module.</>}
+                      </div>
+                    </span>
+                  </label>
+                </div>
+
+                {/* Détail des changements */}
+                <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px', marginBottom: 8 }}
+                  onClick={() => setShowDetails(s => !s)}>
+                  {showDetails ? 'Masquer le détail' : `Voir le détail (${selection.length})`}
+                </button>
+                {showDetails && (
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 6, maxHeight: 220, overflowY: 'auto', fontSize: 12, marginBottom: 8 }}>
+                    {selection
+                      .slice()
+                      .sort((a, b) => a.entry.date_jour.localeCompare(b.entry.date_jour) || a.entry.periode.localeCompare(b.entry.periode))
+                      .map(({ entry, target }) => (
+                        <div key={entry.id} style={{ padding: '6px 12px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                          <span style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{fmtCase(entry)}</span>
+                          <span style={{ flex: 1 }}>
+                            {entry.module_id
+                              ? <><s style={{ color: 'var(--text-muted)' }}>{moduleById[entry.module_id]?.label || '?'}</s> → <strong>{moduleById[target]?.label || '?'}</strong></>
+                              : <><em style={{ color: 'var(--text-muted)' }}>vide</em> → <strong>{moduleById[target]?.label || '?'}</strong></>}
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-8" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+          <button className="btn btn-ghost" onClick={onClose}>Annuler</button>
+          <button className="btn btn-primary"
+            disabled={saving || !diff || selection.length === 0}
+            onClick={handleApply}>
+            {saving ? 'Application…' : `Appliquer (${selection.length} case${selection.length > 1 ? 's' : ''})`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

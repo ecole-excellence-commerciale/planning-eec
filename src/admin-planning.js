@@ -33,6 +33,14 @@ const withAlpha = (hex, a) => {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
+// Outil de vérification : types de conflit détectables sur un planning.
+// code = badge 1 lettre affiché sur la case ; priorité = ordre de l'anneau coloré.
+const CONFLICT_META = {
+  indispo:          { code: 'D', color: '#dc2626', label: 'Intervenant assigné mais non disponible', priorite: 3 },
+  non_qualifie:     { code: 'Q', color: '#9333ea', label: 'Intervenant non qualifié pour ce module', priorite: 2 },
+  sans_intervenant: { code: 'I', color: '#d97706', label: 'Créneau avec module mais sans intervenant', priorite: 1 },
+};
+
 const PagePlanning = ({ data, onReload }) => {
   const toast = useToast();
   const { promos, niveaux, categories, sousCategories = [], modules, intervenants, campagne } = data;
@@ -187,12 +195,73 @@ const PagePlanning = ({ data, onReload }) => {
     return idx === -1 ? null : DISPO_OVERLAY_COLORS[idx];
   };
 
+  // ─── Outil de vérification des conflits ───────────────────────────────
+  const [verifMode, setVerifMode] = useState(false);
+
+  // Lookups dispo réutilisables pour TOUS les intervenants (pas seulement le calque)
+  const dispoSetByInterv = useMemo(() => {
+    const map = {};
+    for (const d of disposIntervenants) {
+      (map[d.intervenant_id] = map[d.intervenant_id] || new Set()).add(`${d.date}|${d.periode}`);
+    }
+    return map;
+  }, [disposIntervenants]);
+
+  // Analyse du planning courant : pour chaque créneau, la liste de ses conflits.
+  // Renvoie { byEntryId: {id: [types]}, liste: [{entry, types, sousDispo}], compteurs }
+  const verif = useMemo(() => {
+    const byEntryId = {};
+    const liste = [];
+    const compteurs = { indispo: 0, non_qualifie: 0, sans_intervenant: 0 };
+    for (const e of planning) {
+      if (!e.module_id) continue; // case vide = pas un conflit
+      const types = [];
+      let sousDispo = null; // 'inconnu' (aucune dispo renseignée) | 'autre' (dispo ailleurs)
+      if (!e.intervenant_id) {
+        types.push('sans_intervenant');
+      } else {
+        // Disponibilité
+        const set = dispoSetByInterv[e.intervenant_id];
+        const estDispo = set && set.has(`${e.date_jour}|${e.periode}`);
+        if (!estDispo) {
+          types.push('indispo');
+          sousDispo = set ? 'autre' : 'inconnu';
+        }
+        // Qualification (note sur la sous-catégorie du module)
+        const mod = moduleById[e.module_id];
+        const scid = mod?.sous_categorie_id;
+        const note = scid ? (intervenantById[e.intervenant_id]?.ratings?.[scid] || null) : null;
+        if (!note) types.push('non_qualifie');
+      }
+      if (types.length) {
+        byEntryId[e.id] = types;
+        liste.push({ entry: e, types, sousDispo });
+        types.forEach(t => { compteurs[t]++; });
+      }
+    }
+    liste.sort((a, b) =>
+      a.entry.date_jour.localeCompare(b.entry.date_jour) ||
+      (a.entry.periode === 'am' ? -1 : 1)
+    );
+    return { byEntryId, liste, compteurs, total: liste.length };
+  }, [planning, dispoSetByInterv, moduleById, intervenantById]);
+
+  // Anneau coloré d'une case = conflit de plus haute priorité
+  const couleurAnneau = (types) => {
+    let best = null;
+    for (const t of types) {
+      if (!best || CONFLICT_META[t].priorite > CONFLICT_META[best].priorite) best = t;
+    }
+    return best ? CONFLICT_META[best].color : null;
+  };
+
   // Réinitialiser la sélection si on change de promo
   useEffect(() => {
     setSelectionMode(false);
     setSelectedCells(new Map());
     setBulkModalOpen(false);
     setBulkModuleModalOpen(false);
+    setVerifMode(false);
   }, [promo?.id]);
 
   const toggleCellSelection = (cellKey, cellInfo) => {
@@ -494,6 +563,13 @@ const PagePlanning = ({ data, onReload }) => {
                   </div>
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
                     <button
+                      className={verifMode ? 'btn btn-primary' : 'btn btn-ghost'}
+                      onClick={() => setVerifMode(v => !v)}
+                      title="Mettre en avant les conflits du planning"
+                      style={{ fontSize: 11, padding: '6px 12px' }}>
+                      {verifMode ? '✓ Vérification active' : '🔍 Vérifier'}
+                    </button>
+                    <button
                       className="btn btn-ghost"
                       onClick={() => setSyncModalOpen(true)}
                       title="Mettre à jour ce planning depuis le programme-type"
@@ -559,6 +635,15 @@ const PagePlanning = ({ data, onReload }) => {
                 </button>
               )}
             </div>
+          )}
+
+          {/* Panneau de vérification des conflits */}
+          {verifMode && promo && (
+            <VerifPanel
+              verif={verif}
+              moduleById={moduleById}
+              intervenantById={intervenantById}
+            />
           )}
 
           {selectionMode && (
@@ -691,6 +776,10 @@ const PagePlanning = ({ data, onReload }) => {
                               const dispoActifs = dateJour
                                 ? dispoOverlayIds.filter(id => dispoSetsByIntervenant[id]?.has(`${dateJour}|${periode}`))
                                 : [];
+                              // Vérification : conflits de cette case (si le mode est actif)
+                              const cellConflicts = (verifMode && entry) ? (verif.byEntryId[entry.id] || null) : null;
+                              const verifDim = verifMode && entry && !cellConflicts; // toute case OK/vide → estompée
+                              const anneauConflit = cellConflicts ? couleurAnneau(cellConflicts) : null;
                               return (
                                 <td key={jourIdx} style={{ padding: 0, position: 'relative' }}>
                                   <div
@@ -729,12 +818,13 @@ const PagePlanning = ({ data, onReload }) => {
                                       ...hoverStyle,
                                       ...sourceStyle,
                                       ...selectStyle,
+                                      ...(anneauConflit ? { outline: `3px solid ${anneauConflit}`, outlineOffset: -2 } : {}),
                                       padding: '8px 10px', borderRadius: 6,
                                       cursor: selectionMode ? 'pointer' : (draggable ? 'grab' : 'pointer'),
                                       fontSize: 11, fontWeight: 500, minHeight: 44,
                                       display: 'flex', alignItems: 'center', lineHeight: 1.3,
-                                      opacity: isDragSource ? 0.35 : (info ? 1 : 0.6),
-                                      transition: 'background 0.1s, outline 0.1s',
+                                      opacity: isDragSource ? 0.35 : (verifDim ? 0.4 : (info ? 1 : 0.6)),
+                                      transition: 'background 0.1s, outline 0.1s, opacity 0.1s',
                                     }}>
                                     {/* Indicateur de sélection */}
                                     {selectionMode && (
@@ -806,6 +896,23 @@ const PagePlanning = ({ data, onReload }) => {
                                           <div key={id} style={{ flex: 1, background: couleurDispo(id) }} />
                                         ))}
                                       </div>
+                                    </div>
+                                  )}
+                                  {/* Badges de conflit (mode vérification) */}
+                                  {cellConflicts && (
+                                    <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 3, pointerEvents: 'none' }}>
+                                      {cellConflicts.map(t => (
+                                        <span key={t} title={CONFLICT_META[t].label}
+                                          style={{
+                                            width: 16, height: 16, borderRadius: 4,
+                                            background: CONFLICT_META[t].color, color: '#fff',
+                                            fontSize: 10, fontWeight: 800,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
+                                          }}>
+                                          {CONFLICT_META[t].code}
+                                        </span>
+                                      ))}
                                     </div>
                                   )}
                                 </td>
@@ -935,6 +1042,86 @@ const PagePlanning = ({ data, onReload }) => {
           onApply={appliquerSyncProgramme}
           onClose={() => setSyncModalOpen(false)}
         />
+      )}
+    </div>
+  );
+};
+
+// ============================================================
+// PANNEAU — vérification des conflits du planning
+// ============================================================
+// Récap + détail des 3 types de conflit. N'effectue aucune écriture :
+// il met seulement en avant ce qui mérite l'attention de l'admin.
+const VerifPanel = ({ verif, moduleById, intervenantById }) => {
+  const [showDetails, setShowDetails] = useState(false);
+  const { compteurs, liste, total } = verif;
+
+  const fmtCase = (e) => {
+    const d = new Date(e.date_jour + 'T00:00:00');
+    return `S${String(e.semaine_num).padStart(2, '0')} · ${d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: 'short' })} ${e.periode === 'am' ? 'matin' : 'a-m'}`;
+  };
+
+  if (total === 0) {
+    return (
+      <div style={{ background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: 8, padding: '12px 14px', marginBottom: 12, fontSize: 13, color: '#065f46', fontWeight: 600 }}>
+        ✓ Aucun conflit détecté sur ce planning. 🎉
+      </div>
+    );
+  }
+
+  // Détail groupé par type
+  const ordreTypes = ['indispo', 'non_qualifie', 'sans_intervenant'];
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 13, color: 'var(--navy)' }}>
+          {total} créneau{total > 1 ? 'x' : ''} à vérifier
+        </strong>
+        {ordreTypes.map(t => compteurs[t] > 0 && (
+          <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+            <span style={{ width: 16, height: 16, borderRadius: 4, background: CONFLICT_META[t].color, color: '#fff', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {CONFLICT_META[t].code}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>{compteurs[t]} · {CONFLICT_META[t].label}</span>
+          </span>
+        ))}
+        <button className="btn btn-ghost" style={{ fontSize: 11, padding: '4px 10px', marginLeft: 'auto' }}
+          onClick={() => setShowDetails(s => !s)}>
+          {showDetails ? 'Masquer le détail' : 'Voir le détail'}
+        </button>
+      </div>
+
+      <div className="text-xs text-muted" style={{ marginTop: 6 }}>
+        Les cases concernées sont entourées et marquées sur la grille (les cases sans conflit sont estompées). Clique une case pour la corriger.
+      </div>
+
+      {showDetails && (
+        <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, maxHeight: 260, overflowY: 'auto' }}>
+          {liste.map(({ entry, types, sousDispo }) => {
+            const mod = moduleById[entry.module_id];
+            const interv = entry.intervenant_id ? intervenantById[entry.intervenant_id] : null;
+            return (
+              <div key={entry.id} style={{ padding: '8px 12px', borderBottom: '1px solid var(--bg-alt)', fontSize: 12, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                <span style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', minWidth: 130 }}>{fmtCase(entry)}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ fontWeight: 600 }}>{mod?.label || 'Module ?'}</span>
+                  {interv && <span className="text-muted"> — {interv.prenom} {interv.nom}</span>}
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 3 }}>
+                    {types.map(t => (
+                      <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: CONFLICT_META[t].color, fontWeight: 600 }}>
+                        <span style={{ width: 14, height: 14, borderRadius: 3, background: CONFLICT_META[t].color, color: '#fff', fontSize: 9, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{CONFLICT_META[t].code}</span>
+                        {t === 'indispo'
+                          ? (sousDispo === 'inconnu' ? 'Aucune dispo renseignée' : 'Pas dispo ce créneau')
+                          : (t === 'non_qualifie' ? 'Non qualifié' : 'Sans intervenant')}
+                      </span>
+                    ))}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

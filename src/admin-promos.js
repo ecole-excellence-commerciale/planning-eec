@@ -130,6 +130,8 @@ const PromoCreateOrEdit = ({ data, promoId, onCancel, onDone }) => {
 
   // Semaines sélectionnées (ISO strings de lundis)
   const [semainesSelectees, setSemainesSelectees] = useState([]);
+  // Semaines présentes au chargement (pour détecter les retraits à l'enregistrement)
+  const [semainesInitiales, setSemainesInitiales] = useState([]);
 
   // Mois en cours d'affichage dans le calendrier (par défaut : septembre 2026)
   const [moisAffichage, setMoisAffichage] = useState(() => {
@@ -151,6 +153,7 @@ const PromoCreateOrEdit = ({ data, promoId, onCancel, onDone }) => {
         setNiveauId(promo.niveau_id);
         const semaines = await db.getPromoSemaines(promoId);
         setSemainesSelectees(semaines);
+        setSemainesInitiales(semaines);
         // Positionner le calendrier sur la date de début
         if (promo.date_debut) {
           const d = new Date(promo.date_debut + 'T00:00:00');
@@ -186,8 +189,25 @@ const PromoCreateOrEdit = ({ data, promoId, onCancel, onDone }) => {
     setSaving(true);
     try {
       if (isEdit) {
+        // Détecter les semaines retirées → leurs créneaux (modules + intervenants) seront supprimés
+        const retirees = semainesInitiales.filter(s => !semainesSelectees.includes(s));
+        if (retirees.length > 0) {
+          const liste = retirees.slice().sort().map(s => {
+            const d = new Date(s + 'T00:00:00');
+            const fin = new Date(d.getTime() + 4 * 86400000);
+            return '· ' + d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }) +
+              ' → ' + fin.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+          }).join('\n');
+          const ok = confirm(
+            `⚠ Tu retires ${retirees.length} semaine${retirees.length > 1 ? 's' : ''} de cette promo :\n\n${liste}\n\n` +
+            `Tous les modules ET intervenants que tu avais affectés sur ${retirees.length > 1 ? 'ces semaines' : 'cette semaine'} seront DÉFINITIVEMENT supprimés du planning.\n\n` +
+            `Continuer ?`
+          );
+          if (!ok) { setSaving(false); return; }
+        }
         await db.renamePromo(promoId, label.trim());
         await db.updatePromoCalendrier(promoId, programmeTypeId, semainesSelectees);
+        setSemainesInitiales(semainesSelectees); // la nouvelle base de référence
         toast('Promo mise à jour', 'success');
       } else {
         await db.addPromo({

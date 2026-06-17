@@ -614,6 +614,40 @@ window.db = {
     return data || [];
   },
 
+  // ----------------------------------------------------------
+  // SAUVEGARDE / EXPORT (lecture seule)
+  // Lit toutes les tables coeur et renvoie un objet JSON téléchargeable.
+  // Sert de filet de sécurité : à exporter avant toute manip à risque.
+  // ----------------------------------------------------------
+  async exportComplet() {
+    const tables = [
+      'niveaux', 'categories', 'sous_categories', 'modules',
+      'programmes_types', 'programme_creneaux',
+      'promos', 'promo_planning',
+      'intervenants', 'intervenant_niveaux', 'intervenant_ratings', 'intervenant_documents',
+      'campagnes', 'disponibilites', 'commentaires_semaine',
+      'classes', 'interventions', // tables legacy, incluses par sécurité
+    ];
+    const out = { _meta: { app: 'planning-eec', exported_at: new Date().toISOString(), version: 1 } };
+    for (const t of tables) {
+      const { data, error } = await _client.from(t).select('*');
+      if (error) { console.warn(`Export : table ${t} ignorée (${error.message})`); continue; }
+      out[t] = data || [];
+    }
+    return out;
+  },
+
+  // Compter les créneaux de planning qui utilisent l'un de ces modules.
+  // Sert à avertir avant suppression d'une catégorie/module (impact réel).
+  async countPlanningParModules(moduleIds) {
+    if (!moduleIds || moduleIds.length === 0) return 0;
+    const { count, error } = await _client.from('promo_planning')
+      .select('id', { count: 'exact', head: true })
+      .in('module_id', moduleIds);
+    if (error) throw error;
+    return count || 0;
+  },
+
   // Modifier le module d'un créneau de promo (NE modifie PAS le programme-type)
   // Cette modification est locale à la promo : utilisée quand on veut ajuster
   // le planning d'une promo spécifique sans changer le modèle global.

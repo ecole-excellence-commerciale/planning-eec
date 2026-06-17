@@ -1034,11 +1034,16 @@ const PageParametres = ({ data, onReload }) => {
     toast('Catégorie ajoutée', 'success');
     setNewCatText(''); setShowAddCat(false); onReload();
   };
-  const askDeleteCat = (cat) => {
-    const nbModules = (modulesByCat[cat.id] || []).length;
+  const askDeleteCat = async (cat) => {
+    const mods = (modulesByCat[cat.id] || []);
+    const nbModules = mods.length;
     const nbNotes = interParCategorie[cat.id] || 0;
-    setDeleteCatModal({ id: cat.id, label: cat.label, nbModules, nbNotes });
+    setDeleteCatModal({ id: cat.id, label: cat.label, nbModules, nbNotes, nbCreneaux: null });
     setDeleteCatConfirm('');
+    try {
+      const nbCreneaux = await db.countPlanningParModules(mods.map(m => m.id));
+      setDeleteCatModal(m => (m && m.id === cat.id) ? { ...m, nbCreneaux } : m);
+    } catch (e) { console.error(e); }
   };
   const confirmDeleteCat = async () => {
     await db.deleteCategorie(deleteCatModal.id);
@@ -1096,9 +1101,13 @@ const PageParametres = ({ data, onReload }) => {
     toast('Module ajouté', 'success');
     setNewModText(''); setAddingModFor(null); onReload();
   };
-  const askDeleteMod = (mod, catLabel) => {
-    setDeleteModModal({ id: mod.id, label: mod.label, categorieLabel: catLabel });
+  const askDeleteMod = async (mod, catLabel) => {
+    setDeleteModModal({ id: mod.id, label: mod.label, categorieLabel: catLabel, nbCreneaux: null });
     setDeleteModConfirm('');
+    try {
+      const nbCreneaux = await db.countPlanningParModules([mod.id]);
+      setDeleteModModal(m => (m && m.id === mod.id) ? { ...m, nbCreneaux } : m);
+    } catch (e) { console.error(e); }
   };
   const confirmDeleteMod = async () => {
     await db.deleteModule(deleteModModal.id);
@@ -1166,6 +1175,27 @@ const PageParametres = ({ data, onReload }) => {
     return modules.filter(m => catIds.has(m.categorie_id)).length;
   }, [modules, sortedCats]);
 
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const dump = await db.exportComplet();
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const nom = `planning-eec-sauvegarde-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = nom; a.click();
+      URL.revokeObjectURL(url);
+      const total = Object.keys(dump).filter(k => k !== '_meta').reduce((s, k) => s + (dump[k] ? dump[k].length : 0), 0);
+      toast(`Sauvegarde téléchargée (${total} lignes)`, 'success');
+    } catch (e) {
+      console.error(e);
+      toast(e.message || "Échec de l'export", 'error');
+    } finally { setExporting(false); }
+  };
+
   return (
     <div className="page-content">
       <div className="page-header">
@@ -1173,6 +1203,23 @@ const PageParametres = ({ data, onReload }) => {
           <div className="breadcrumb">GESTION</div>
           <h1 className="page-title display-dot">Niveaux & catégories</h1>
           <div className="page-subtitle">Paramètres de qualification des intervenants</div>
+        </div>
+      </div>
+
+      {/* SAUVEGARDE — export complet (filet de sécurité) */}
+      <div className="card mb-16">
+        <div className="card-header">
+          <div className="card-title" style={{ marginBottom: 0 }}>Sauvegarde</div>
+          <span className="text-xs text-muted">Export complet</span>
+        </div>
+        <div className="flex-between" style={{ alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div className="text-sm text-muted" style={{ flex: 1, minWidth: 200 }}>
+            Télécharge une copie de toutes tes données (planning, promos, modules, intervenants, dispos…) dans un fichier JSON.
+            À faire <strong>avant toute manip à risque</strong> (refonte de catégories, édition de calendrier…).
+          </div>
+          <button className="btn btn-primary" disabled={exporting} onClick={handleExport}>
+            {exporting ? 'Export en cours…' : '⬇ Exporter une sauvegarde'}
+          </button>
         </div>
       </div>
 
@@ -1527,6 +1574,8 @@ const PageParametres = ({ data, onReload }) => {
               <li><strong>{deleteCatModal.nbModules}</strong> module{deleteCatModal.nbModules > 1 ? 's' : ''} de cette catégorie</li>
               <li><strong>{deleteCatModal.nbNotes}</strong> intervenant{deleteCatModal.nbNotes > 1 ? 's' : ''} noté{deleteCatModal.nbNotes > 1 ? 's' : ''} dans cette catégorie (toutes les notes seront perdues)</li>
               {deleteCatModal.nbModules > 0 && <li>Les créneaux du programme-type rattachés à ces modules deviendront « sans module assigné »</li>}
+              {deleteCatModal.nbCreneaux === null && deleteCatModal.nbModules > 0 && <li style={{ opacity: 0.7 }}>Calcul de l'impact sur le planning…</li>}
+              {deleteCatModal.nbCreneaux > 0 && <li><strong>{deleteCatModal.nbCreneaux}</strong> créneau{deleteCatModal.nbCreneaux > 1 ? 'x' : ''} de planning perdront leur module <span style={{ fontWeight: 400 }}>(la case et l'intervenant restent — tu devras re-choisir le module)</span></li>}
             </ul>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', marginBottom: 12 }}>⚠ Cette action est irréversible.</div>
             <div className="field">
@@ -1560,6 +1609,13 @@ const PageParametres = ({ data, onReload }) => {
             </div>
             <div className="text-sm" style={{ background: '#fff8e5', padding: '10px 12px', borderRadius: 6, marginBottom: 16 }}>
               Les créneaux du programme-type qui utilisaient ce module deviendront « sans module assigné ». Tu pourras les ré-assigner depuis l'écran Programme-type.
+              {deleteModModal.nbCreneaux === null && <div style={{ marginTop: 6, opacity: 0.7 }}>Calcul de l'impact sur le planning…</div>}
+              {deleteModModal.nbCreneaux > 0 && (
+                <div style={{ marginTop: 6, color: 'var(--danger)', fontWeight: 600 }}>
+                  ⚠ {deleteModModal.nbCreneaux} créneau{deleteModModal.nbCreneaux > 1 ? 'x' : ''} de planning perdront leur module
+                  <span style={{ fontWeight: 400 }}> (la case et l'intervenant restent).</span>
+                </div>
+              )}
             </div>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)', marginBottom: 12 }}>⚠ Cette action est irréversible.</div>
             <div className="field">

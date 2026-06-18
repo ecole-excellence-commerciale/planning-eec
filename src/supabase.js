@@ -607,7 +607,7 @@ window.db = {
   async getPromoPlanning(promoId) {
     const { data, error } = await _client
       .from('promo_planning')
-      .select('id, date_jour, periode, semaine_num, module_id, intervenant_id, notes')
+      .select('id, date_jour, periode, semaine_num, module_id, intervenant_id, notes, statut_validation')
       .eq('promo_id', promoId)
       .order('date_jour').order('periode');
     if (error) throw error;
@@ -705,6 +705,19 @@ window.db = {
       .update({ intervenant_id: intervenantId })
       .eq('id', planningId);
     if (error) throw error;
+  },
+
+  // Statut de validation d'un ou plusieurs créneaux.
+  // statut ∈ 'provisoire' | 'cale' | 'confirme'. ids = tableau d'id promo_planning.
+  async setPlanningStatut(ids, statut) {
+    const liste = (ids || []).filter(Boolean);
+    if (liste.length === 0) return 0;
+    const { error } = await _client
+      .from('promo_planning')
+      .update({ statut_validation: statut })
+      .in('id', liste);
+    if (error) throw error;
+    return liste.length;
   },
 
   // Récupérer TOUTES les assignations d'un intervenant (toutes promos confondues)

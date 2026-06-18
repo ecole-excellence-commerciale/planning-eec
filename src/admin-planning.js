@@ -41,6 +41,15 @@ const CONFLICT_META = {
   sans_intervenant: { code: 'I', color: '#d97706', label: 'Créneau avec module mais sans intervenant', priorite: 1 },
 };
 
+// Statuts de validation d'un créneau (ordre = niveau de verrouillage croissant)
+const STATUT_ORDRE = ['provisoire', 'cale', 'confirme'];
+const STATUT_META = {
+  provisoire: { label: 'Provisoire', icon: '',   color: '#94a3b8', desc: 'Modifiable et déplaçable librement' },
+  cale:       { label: 'Calé',       icon: '📌', color: '#ea580c', desc: 'À ne plus bouger — modification possible avec avertissement' },
+  confirme:   { label: 'Confirmé',   icon: '🔒', color: '#16a34a', desc: 'Validé avec l’intervenant — verrou fort' },
+};
+const statutOf = (entry) => (entry && entry.statut_validation) || 'provisoire';
+
 const PagePlanning = ({ data, onReload }) => {
   const toast = useToast();
   const { promos, niveaux, categories, sousCategories = [], modules, intervenants, campagne } = data;
@@ -121,6 +130,19 @@ const PagePlanning = ({ data, onReload }) => {
     [intervenants]
   );
   const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
+
+  // Avancement de la validation sur la promo courante (créneaux ayant un module)
+  const validationStats = useMemo(() => {
+    let provisoire = 0, cale = 0, confirme = 0;
+    for (const e of planning) {
+      if (!e.module_id) continue;
+      const s = e.statut_validation || 'provisoire';
+      if (s === 'confirme') confirme++;
+      else if (s === 'cale') cale++;
+      else provisoire++;
+    }
+    return { provisoire, cale, confirme, total: provisoire + cale + confirme };
+  }, [planning]);
 
   // ─── Sélection multiple pour affectation bulk ─────────────────────────
   const [selectionMode, setSelectionMode] = useState(false);
@@ -411,6 +433,7 @@ const PagePlanning = ({ data, onReload }) => {
   // Garde editing ouvert pour permettre d'enchaîner module → intervenant
   const saveModule = async (moduleId, keepOpen = false) => {
     if (!editing) return;
+    if (!confirmEditionVerrouillee('le module')) return;
     try {
       let newPlanningId = editing.planningId;
       if (editing.planningId) {
@@ -441,11 +464,57 @@ const PagePlanning = ({ data, onReload }) => {
   // Assigner un intervenant à un créneau
   const saveIntervenant = async (intervenantId) => {
     if (!editing || !editing.planningId) return;
+    if (!confirmEditionVerrouillee('l’intervenant')) return;
     try {
       await db.setPromoPlanningIntervenant(editing.planningId, intervenantId);
       toast(intervenantId ? 'Intervenant assigné' : 'Intervenant retiré', 'success');
       await loadPlanningEtAssignations(promo.id);
       setEditing(prev => prev ? { ...prev, currentIntervenantId: intervenantId } : prev);
+    } catch (e) {
+      console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
+  // Demande confirmation si le créneau en cours d'édition est calé/confirmé.
+  // Renvoie true si on peut continuer, false si l'utilisateur annule.
+  const confirmEditionVerrouillee = (quoi) => {
+    const st = editing?.currentStatut || 'provisoire';
+    if (st === 'provisoire') return true;
+    const m = STATUT_META[st];
+    return window.confirm(
+      `Ce créneau est « ${m.label} » (${m.desc}).\n\nModifier ${quoi} quand même ?`
+    );
+  };
+
+  // Changer le statut de validation du créneau en cours d'édition
+  const saveStatut = async (statut) => {
+    if (!editing) return;
+    if (!editing.planningId) {
+      toast('Assigne d’abord un module à ce créneau', 'error');
+      return;
+    }
+    try {
+      await db.setPlanningStatut([editing.planningId], statut);
+      toast(`Statut : ${STATUT_META[statut].label}`, 'success');
+      await loadPlanningEtAssignations(promo.id);
+      setEditing(prev => prev ? { ...prev, currentStatut: statut } : prev);
+    } catch (e) {
+      console.error(e); toast(e.message || 'Erreur', 'error');
+    }
+  };
+
+  // Appliquer un statut à la sélection multiple (créneaux ayant un module)
+  const bulkSetStatut = async (statut) => {
+    const ids = selectedCellsList.filter(c => c.planningId).map(c => c.planningId);
+    if (ids.length === 0) {
+      toast('Aucun créneau avec module dans la sélection', 'error');
+      return;
+    }
+    try {
+      await db.setPlanningStatut(ids, statut);
+      toast(`${ids.length} créneau${ids.length > 1 ? 'x' : ''} → ${STATUT_META[statut].label}`, 'success');
+      await loadPlanningEtAssignations(promo.id);
+      exitSelectionMode();
     } catch (e) {
       console.error(e); toast(e.message || 'Erreur', 'error');
     }
@@ -483,6 +552,11 @@ const PagePlanning = ({ data, onReload }) => {
     if (!src || !src.moduleId) return;
     // Même case → rien faire
     if (src.dateJour === dst.dateJour && src.periode === dst.periode) return;
+    // Cible verrouillée (calé/confirmé) → on refuse le dépôt
+    if (dst.statut && dst.statut !== 'provisoire') {
+      toast(`Créneau « ${STATUT_META[dst.statut].label} » : libère-le d’abord (repasse-le en Provisoire)`, 'error');
+      return;
+    }
     try {
       if (dst.planningId && dst.moduleId) {
         // Case cible occupée → SWAP des modules
@@ -583,6 +657,19 @@ const PagePlanning = ({ data, onReload }) => {
                       {selectionMode ? '✗ Quitter la sélection' : '☑ Sélection multiple'}
                     </button>
                   </div>
+                  {/* Avancement de la validation */}
+                  {validationStats.total > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                      <span style={{ fontWeight: 600 }}>Validation :</span>
+                      <div style={{ flex: 1, maxWidth: 240, height: 6, borderRadius: 999, background: 'var(--border)', overflow: 'hidden', display: 'flex' }}>
+                        <div style={{ width: `${100 * validationStats.confirme / validationStats.total}%`, background: STATUT_META.confirme.color }} />
+                        <div style={{ width: `${100 * validationStats.cale / validationStats.total}%`, background: STATUT_META.cale.color }} />
+                      </div>
+                      <span title="Confirmés">🔒 {validationStats.confirme}</span>
+                      <span title="Calés">📌 {validationStats.cale}</span>
+                      <span style={{ opacity: 0.7 }}>· {validationStats.provisoire} provisoire{validationStats.provisoire > 1 ? 's' : ''}</span>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -746,6 +833,7 @@ const PagePlanning = ({ data, onReload }) => {
                                 semaineNum: num,
                                 dateJour, periode,
                                 moduleId: entry?.module_id || null,
+                                statut: statutOf(entry),
                               };
                               const baseStyle = info ? {
                                 background: info.couleur.bg,
@@ -771,7 +859,10 @@ const PagePlanning = ({ data, onReload }) => {
                                 outline: '3px solid var(--cyan)',
                                 outlineOffset: -2,
                               } : {};
-                              const draggable = !!(entry && info) && !selectionMode;
+                              const statut = statutOf(entry);
+                              const statutMeta = statut !== 'provisoire' ? STATUT_META[statut] : null;
+                              // Seuls les créneaux "provisoire" sont déplaçables (calé/confirmé = verrouillés)
+                              const draggable = !!(entry && info) && !selectionMode && statut === 'provisoire';
                               // Calque dispos : quels intervenants sélectionnés sont dispo ici ?
                               const dispoActifs = dateJour
                                 ? dispoOverlayIds.filter(id => dispoSetsByIntervenant[id]?.has(`${dateJour}|${periode}`))
@@ -808,6 +899,7 @@ const PagePlanning = ({ data, onReload }) => {
                                         periode,
                                         currentModuleId: entry?.module_id || null,
                                         currentIntervenantId: entry?.intervenant_id || null,
+                                        currentStatut: statutOf(entry),
                                       });
                                     }}
                                     title={selectionMode
@@ -819,6 +911,7 @@ const PagePlanning = ({ data, onReload }) => {
                                       ...sourceStyle,
                                       ...selectStyle,
                                       ...(anneauConflit ? { outline: `3px solid ${anneauConflit}`, outlineOffset: -2 } : {}),
+                                      ...(statutMeta ? { boxShadow: `inset 4px 0 0 0 ${statutMeta.color}` } : {}),
                                       padding: '8px 10px', borderRadius: 6,
                                       cursor: selectionMode ? 'pointer' : (draggable ? 'grab' : 'pointer'),
                                       fontSize: 11, fontWeight: 500, minHeight: 44,
@@ -826,6 +919,15 @@ const PagePlanning = ({ data, onReload }) => {
                                       opacity: isDragSource ? 0.35 : (verifDim ? 0.4 : (info ? 1 : 0.6)),
                                       transition: 'background 0.1s, outline 0.1s, opacity 0.1s',
                                     }}>
+                                    {/* Badge statut de validation (📌 calé / 🔒 confirmé) */}
+                                    {statutMeta && (
+                                      <div title={`${statutMeta.label} — ${statutMeta.desc}`} style={{
+                                        position: 'absolute', bottom: 3, right: 4,
+                                        fontSize: 10, lineHeight: 1, pointerEvents: 'none',
+                                      }}>
+                                        {statutMeta.icon}
+                                      </div>
+                                    )}
                                     {/* Indicateur de sélection */}
                                     {selectionMode && (
                                       <div style={{
@@ -948,6 +1050,7 @@ const PagePlanning = ({ data, onReload }) => {
           onSaveModule={saveModule}
           onClearModule={() => saveModule(null, true)}
           onSaveIntervenant={saveIntervenant}
+          onSaveStatut={saveStatut}
           onClose={() => setEditing(null)}
         />
       )}
@@ -994,6 +1097,23 @@ const PagePlanning = ({ data, onReload }) => {
               </span>
             )}
           </button>
+          <div style={{ width: 1, alignSelf: 'stretch', background: 'rgba(255,255,255,0.25)', margin: '0 2px' }} />
+          <span style={{ fontSize: 12, opacity: 0.8 }}>Statut :</span>
+          {STATUT_ORDRE.map(st => {
+            const m = STATUT_META[st];
+            return (
+              <button key={st} className="btn btn-ghost"
+                onClick={() => bulkSetStatut(st)}
+                disabled={nbCellsWithModule === 0}
+                title={nbCellsWithModule === 0 ? 'Affecte d’abord un module' : m.desc}
+                style={{
+                  color: '#fff', borderColor: m.color, background: 'transparent',
+                  opacity: nbCellsWithModule === 0 ? 0.4 : 1, fontSize: 12, padding: '6px 10px',
+                }}>
+                {m.icon ? m.icon + ' ' : ''}{m.label}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -1309,7 +1429,7 @@ const ModalSyncProgramme = ({ promo, planning, moduleById, onApply, onClose }) =
 const ModalEditeurCreneau = ({
   editing, promo, niveau, categories, modules, intervenants,
   disposIntervenants, assignationsAutres, promoById, moduleById, categorieById, sousCategorieById,
-  onSaveModule, onClearModule, onSaveIntervenant, onClose,
+  onSaveModule, onClearModule, onSaveIntervenant, onSaveStatut, onClose,
 }) => {
   // Onglet actif (par défaut "module" si pas de module assigné, sinon "intervenant"
   // pour aller plus vite à l'étape suivante)
@@ -1374,6 +1494,40 @@ const ModalEditeurCreneau = ({
             )}
           </div>
         </div>
+
+        {/* Statut de validation du créneau */}
+        {editing.planningId ? (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Statut de validation
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {STATUT_ORDRE.map(st => {
+                const m = STATUT_META[st];
+                const actif = (editing.currentStatut || 'provisoire') === st;
+                return (
+                  <button key={st}
+                    onClick={() => { if (!actif) onSaveStatut(st); }}
+                    title={m.desc}
+                    style={{
+                      flex: 1, padding: '8px 10px', borderRadius: 6, cursor: actif ? 'default' : 'pointer',
+                      border: `1.5px solid ${actif ? m.color : 'var(--border)'}`,
+                      background: actif ? m.color : '#fff',
+                      color: actif ? '#fff' : 'var(--text)',
+                      fontWeight: actif ? 700 : 500, fontSize: 12,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      transition: 'all 0.12s',
+                    }}>
+                    {m.icon && <span>{m.icon}</span>}{m.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              {STATUT_META[editing.currentStatut || 'provisoire'].desc}
+            </div>
+          </div>
+        ) : null}
 
         {/* Onglets */}
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 12 }}>

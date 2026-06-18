@@ -8,6 +8,14 @@ function lienIntervenant(token) {
   return `${base}?i=${token}`;
 }
 
+// Affichage des statuts de validation (cohérent avec le planning admin)
+const STATUT_VIEW = {
+  provisoire: { label: 'Provisoire', icon: '',   color: '#94a3b8' },
+  cale:       { label: 'Calé',       icon: '📌', color: '#ea580c' },
+  confirme:   { label: 'Confirmé',   icon: '🔒', color: '#16a34a' },
+};
+const statutView = (a) => STATUT_VIEW[(a && a.statut_validation) || 'provisoire'] || STATUT_VIEW.provisoire;
+
 // ---- LISTE INTERVENANTS ----
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
@@ -552,6 +560,48 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                 const honoraires = inter.taux_horaire ? nb * inter.taux_horaire * HEURES_DEMI : 0;
                 const fmtJour = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
 
+                // Export CSV des interventions affichées (respecte le filtre de période)
+                const exportInterventionsCSV = () => {
+                  const sep = ';';
+                  const esc = (v) => {
+                    const s = (v == null ? '' : String(v));
+                    return /[";\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+                  };
+                  const header = ['Date', 'Jour', 'Période', 'Module', 'Catégorie', 'Sous-catégorie', 'Promo', 'Statut', 'Heures'];
+                  const lignes = sorted.map(a => {
+                    const mod = moduleById[a.module_id];
+                    const sub = mod?.sous_categorie_id ? sousCategorieById[mod.sous_categorie_id] : null;
+                    const cat = mod ? categorieById[mod.categorie_id] : null;
+                    const promo = promoById[a.promo_id];
+                    const d = new Date(a.date_jour + 'T00:00:00');
+                    return [
+                      a.date_jour,
+                      d.toLocaleDateString('fr-FR', { weekday: 'long' }),
+                      a.periode === 'am' ? 'Matin' : 'Après-midi',
+                      mod?.label || '',
+                      cat?.label || '',
+                      (sub && sub.label !== 'Général') ? sub.label : '',
+                      promo?.label || '',
+                      statutView(a).label,
+                      String(HEURES_DEMI).replace('.', ','),
+                    ].map(esc).join(sep);
+                  });
+                  // Ligne de total
+                  const total = ['', '', '', '', '', '', '', `TOTAL (${nb})`, String(heures).replace('.', ',')].map(esc).join(sep);
+                  const csv = '\uFEFF' + [header.map(esc).join(sep), ...lignes, total].join('\r\n');
+                  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                  const url = URL.createObjectURL(blob);
+                  const nom = `${inter.prenom || ''}_${inter.nom || ''}`.trim().replace(/\s+/g, '-') || 'intervenant';
+                  const suffixe = filtreActif
+                    ? `_${periodeFiltre.debut || minDate}_${periodeFiltre.fin || maxDate}`
+                    : '';
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.download = `interventions_${nom}${suffixe}.csv`;
+                  document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                  URL.revokeObjectURL(url);
+                };
+
                 return (
                   <div>
                     {/* Filtre de période */}
@@ -606,6 +656,11 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                           · {periodeFiltre.debut ? fmtJour(periodeFiltre.debut) : '…'} → {periodeFiltre.fin ? fmtJour(periodeFiltre.fin) : '…'}
                         </span>
                       )}
+                      <button className="btn btn-secondary btn-sm" onClick={exportInterventionsCSV}
+                        disabled={nb === 0} title="Télécharger les interventions affichées (CSV, prêt à envoyer)"
+                        style={{ marginLeft: 'auto', fontSize: 11 }}>
+                        <Icon name="download" size={12} /> Exporter (CSV)
+                      </button>
                     </div>
 
                     {nb === 0 && (
@@ -648,8 +703,22 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                                     </div>
                                   )}
                                 </div>
-                                <div className="chip" style={{ background: 'var(--bg-alt)', fontSize: 11 }}>
-                                  {promo?.label || '?'}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                                  {((a.statut_validation || 'provisoire') !== 'provisoire') && (() => {
+                                    const sv = statutView(a);
+                                    return (
+                                      <span title={sv.label} style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 3,
+                                        fontSize: 10, fontWeight: 700, color: '#fff', background: sv.color,
+                                        borderRadius: 999, padding: '2px 7px', whiteSpace: 'nowrap',
+                                      }}>
+                                        {sv.icon} {sv.label}
+                                      </span>
+                                    );
+                                  })()}
+                                  <div className="chip" style={{ background: 'var(--bg-alt)', fontSize: 11 }}>
+                                    {promo?.label || '?'}
+                                  </div>
                                 </div>
                               </div>
                             );

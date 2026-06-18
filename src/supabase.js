@@ -725,7 +725,7 @@ window.db = {
   async getAllAssignationsIntervenant(intervenantId) {
     const { data, error } = await _client
       .from('promo_planning')
-      .select('id, promo_id, semaine_num, date_jour, periode, module_id')
+      .select('id, promo_id, semaine_num, date_jour, periode, module_id, statut_validation')
       .eq('intervenant_id', intervenantId)
       .order('date_jour');
     if (error) throw error;

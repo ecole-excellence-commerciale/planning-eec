@@ -11,11 +11,15 @@
 const DOC_CATEGORIES = [
   { type: 'cv', label: 'CV', multiple: false, icon: '📄' },
   { type: 'diplome', label: 'Diplômes', multiple: true, icon: '🎓' },
-  { type: 'nda', label: 'NDA', multiple: false, icon: '🔏' },
+  { type: 'nda', label: 'NDA (justificatif, optionnel)', multiple: false, icon: '🔏' },
+];
+// Catégorie dédiée à l'onglet Facturation (bons de commande signés)
+const BDC_CATEGORIES = [
+  { type: 'bdc', label: 'Bons de commande signés', multiple: true, icon: '🧾' },
 ];
 const DOC_MAX_BYTES = 10 * 1024 * 1024;
 
-const GestionDocuments = ({ mode, intervenantId, token }) => {
+const GestionDocuments = ({ mode, intervenantId, token, categories }) => {
   const toast = useToast();
   const [docs, setDocs] = useState(null); // null = chargement
   const [busy, setBusy] = useState(null); // type en cours d'upload
@@ -82,7 +86,7 @@ const GestionDocuments = ({ mode, intervenantId, token }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {DOC_CATEGORIES.map(cat => {
+      {(categories || DOC_CATEGORIES).map(cat => {
         const items = docs.filter(d => d.type === cat.type);
         const remplace = !cat.multiple && items.length > 0;
         return (

@@ -16,6 +16,44 @@ const STATUT_VIEW = {
 };
 const statutView = (a) => STATUT_VIEW[(a && a.statut_validation) || 'provisoire'] || STATUT_VIEW.provisoire;
 
+// Éditeur du numéro de déclaration d'activité (NDA) d'un intervenant
+const NdaNumeroEditor = ({ inter, onSaved }) => {
+  const toast = useToast();
+  const [val, setVal] = useState(inter.nda_numero || '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(inter.nda_numero || ''); }, [inter.id, inter.nda_numero]);
+  const dirty = (val.trim() || '') !== (inter.nda_numero || '');
+  const save = async () => {
+    setSaving(true);
+    try {
+      await db.updateIntervenant(inter.id, { nda_numero: val.trim() || null });
+      toast('N° NDA enregistré', 'success');
+      onSaved && onSaved();
+    } catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontWeight: 600, color: 'var(--navy)', fontSize: 14, marginBottom: 8 }}>
+        🔢 Numéro de déclaration d’activité (NDA)
+      </div>
+      <div className="flex gap-8" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <input type="text" value={val} placeholder="Ex. 11 75 12345 75"
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && dirty && !saving) save(); }}
+          style={{ maxWidth: 280 }} />
+        <button className="btn btn-secondary btn-sm" disabled={!dirty || saving} onClick={save}>
+          {saving ? 'Enregistrement…' : 'Enregistrer'}
+        </button>
+        {inter.nda_numero && !dirty && (
+          <span className="chip text-xs" style={{ background: 'var(--bg-alt)' }}>✓ Enregistré</span>
+        )}
+      </div>
+      <div className="help mt-8">Le numéro suffit dans la plupart des cas. Le justificatif PDF reste optionnel ci-dessous.</div>
+    </div>
+  );
+};
+
 // ---- LISTE INTERVENANTS ----
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
@@ -406,6 +444,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
               Interventions {assignations.length > 0 && <span className="chip cyan text-xs" style={{ marginLeft: 4 }}>{assignations.length}</span>}
             </div>
             <div className={'tab ' + (tab === 'documents' ? 'active' : '')} onClick={() => setTab('documents')}>Documents</div>
+            <div className={'tab ' + (tab === 'facturation' ? 'active' : '')} onClick={() => setTab('facturation')}>Facturation</div>
             <div className={'tab ' + (tab === 'profil' ? 'active' : '')} onClick={() => setTab('profil')}>Profil</div>
             <div className={'tab ' + (tab === 'actions' ? 'active' : '')} onClick={() => setTab('actions')}>Actions</div>
           </div>
@@ -734,8 +773,19 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
 
           {tab === 'documents' && (
             <div className="card">
-              <div className="card-title">Documents (CV, diplômes, NDA)</div>
+              <div className="card-title">Documents & NDA</div>
+              <NdaNumeroEditor inter={inter} onSaved={load} />
               <GestionDocuments mode="admin" intervenantId={inter.id} />
+            </div>
+          )}
+
+          {tab === 'facturation' && (
+            <div className="card">
+              <div className="card-title">Facturation — Bons de commande</div>
+              <div className="help" style={{ marginBottom: 12 }}>
+                Stocke ici les BDC signés par l’intervenant (PDF). L’émission directe des BDC depuis la plateforme est prévue.
+              </div>
+              <GestionDocuments mode="admin" intervenantId={inter.id} categories={BDC_CATEGORIES} />
             </div>
           )}
 

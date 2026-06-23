@@ -13,9 +13,10 @@ const DOC_CATEGORIES = [
   { type: 'diplome', label: 'Diplômes', multiple: true, icon: '🎓' },
   { type: 'nda', label: 'NDA (justificatif, optionnel)', multiple: false, icon: '🔏' },
 ];
-// Catégorie dédiée à l'onglet Facturation (bons de commande signés)
+// Catégories de l'onglet Facturation (bons de commande + contrats signés)
 const BDC_CATEGORIES = [
   { type: 'bdc', label: 'Bons de commande signés', multiple: true, icon: '🧾' },
+  { type: 'contrat', label: 'Contrats signés', multiple: true, icon: '📝' },
 ];
 const DOC_MAX_BYTES = 10 * 1024 * 1024;
 

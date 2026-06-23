@@ -54,6 +54,317 @@ const NdaNumeroEditor = ({ inter, onSaved }) => {
   );
 };
 
+// ============================================================
+// GÉNÉRATION DE DOCUMENTS (BDC Formation) — Phase 1
+// ============================================================
+const RNCP_PAR_NIVEAU = {
+  'Bac+2':   { formation: 'Négociateur Technico-Commercial', certification: 'Négociateur Technico-Commercial', rncp: '39063' },
+  'Mastère': { formation: "Manager d'affaires", certification: "Manager d'affaires", rncp: '40257' },
+};
+
+// Chargement paresseux de PizZip + docxtemplater (CDN) au 1er usage
+let _docxLibsPromise = null;
+function chargerDocxLibs() {
+  if (window.PizZip && window.docxtemplater) return Promise.resolve();
+  if (_docxLibsPromise) return _docxLibsPromise;
+  const load = (src) => new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = () => res(); s.onerror = () => rej(new Error('Échec de chargement : ' + src));
+    document.head.appendChild(s);
+  });
+  _docxLibsPromise = load('https://unpkg.com/pizzip@3.2.0/dist/pizzip.min.js')
+    .then(() => load('https://unpkg.com/docxtemplater@3.69.0/build/docxtemplater.min.js'));
+  return _docxLibsPromise;
+}
+const fmtMontantFr = (n) => (Number(n) || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtHeuresFr = (h) => {
+  const n = Number(h) || 0; const e = Math.floor(n); const m = Math.round((n - e) * 60);
+  return m ? `${e}h${String(m).padStart(2, '0')}` : `${e}h`;
+};
+const urlTemplateEEC = (fichier) => {
+  const base = window.location.origin + window.location.pathname.replace(/index\.html$/, '');
+  return base + 'templates/' + fichier;
+};
+
+// Éditeur des coordonnées prestataire (réutilisées dans tous les documents)
+const PRESTA_CHAMPS = [
+  { k: 'raison_sociale', label: 'Raison sociale / Dénomination', ph: 'Ex. Jean Dupont EI' },
+  { k: 'statut_juridique', label: 'Statut juridique', ph: 'Ex. Micro-entreprise' },
+  { k: 'siret', label: 'SIREN / SIRET', ph: 'Ex. 123 456 789 00012' },
+  { k: 'representant_legal', label: 'Représentant légal', ph: 'Ex. Jean Dupont' },
+  { k: 'adresse', label: 'Adresse', ph: 'Ex. 12 rue des Lilas, 75011 Paris' },
+];
+const PrestataireEditor = ({ inter, onSaved }) => {
+  const toast = useToast();
+  const initial = () => Object.fromEntries(PRESTA_CHAMPS.map(c => [c.k, inter[c.k] || '']));
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setForm(initial()); }, [inter.id]);
+  const dirty = PRESTA_CHAMPS.some(c => (form[c.k].trim() || '') !== (inter[c.k] || ''));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {}; PRESTA_CHAMPS.forEach(c => payload[c.k] = form[c.k].trim() || null);
+      await db.updateIntervenant(inter.id, payload);
+      toast('Coordonnées prestataire enregistrées', 'success'); onSaved && onSaved();
+    } catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontWeight: 600, color: 'var(--navy)', fontSize: 14, marginBottom: 4 }}>🏢 Coordonnées prestataire (BDC &amp; contrats)</div>
+      <div className="help" style={{ marginBottom: 10 }}>Saisies une fois, réutilisées automatiquement dans tous les documents générés.</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {PRESTA_CHAMPS.map(c => (
+          <div key={c.k} className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>{c.label}</div>
+            <input type="text" value={form[c.k]} placeholder={c.ph}
+              onChange={e => setForm(f => ({ ...f, [c.k]: e.target.value }))} />
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <button className="btn btn-secondary btn-sm" disabled={!dirty || saving} onClick={save}>
+          {saving ? 'Enregistrement…' : 'Enregistrer les coordonnées'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Modale de génération d'un BDC Formation
+const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, onClose, onArchived }) => {
+  const toast = useToast();
+  const HEURES_DEMI = ((window.EEC_CONFIG && window.EEC_CONFIG.HEURES_PAR_JOUR) || window.HEURES_PAR_JOUR || 7) / 2;
+  const taux = Number(inter.taux_horaire) || 0;
+  const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
+  const niveauById = useMemo(() => Object.fromEntries(niveaux.map(n => [n.id, n])), [niveaux]);
+  const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
+
+  const joursCourts = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+  const fmtDH = (a) => {
+    const d = new Date(a.date_jour + 'T00:00:00');
+    return `${joursCourts[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} — ${a.periode === 'am' ? 'matin' : 'après-midi'}`;
+  };
+  const fmtJourFr = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
+
+  const confirmees = useMemo(() => assignations
+    .filter(a => a.statut_validation === 'confirme' && a.module_id)
+    .sort((a, b) => a.date_jour.localeCompare(b.date_jour) || (a.periode === 'am' ? -1 : 1)), [assignations]);
+
+  const niveauDominant = useMemo(() => {
+    const c = {};
+    confirmees.forEach(a => { const nv = niveauById[promoById[a.promo_id]?.niveau_id]?.label; if (nv) c[nv] = (c[nv] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Bac+2';
+  }, [confirmees]);
+  const rncpDef = RNCP_PAR_NIVEAU[niveauDominant] || { formation: '', certification: '', rncp: '' };
+
+  const [rows, setRows] = useState(() => confirmees.map(a => ({
+    key: a.id, include: true, manuel: false,
+    cours: moduleById[a.module_id]?.label || '',
+    promo: promoById[a.promo_id]?.label || '',
+    date_heure: fmtDH(a), date: a.date_jour,
+    heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
+  })));
+
+  const today = new Date();
+  const [meta, setMeta] = useState({
+    num_bdc: `BDC-${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`,
+    formation: rncpDef.formation, certification: rncpDef.certification, rncp: rncpDef.rncp,
+    effectif: '', duree_session: '',
+    lieu_mode: 'presentiel', lieu_detail: '103 rue Caulaincourt, 75018 Paris',
+    taux: String(taux || ''),
+  });
+  const [archiver, setArchiver] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const inclus = rows.filter(r => r.include);
+  const totalHeures = inclus.reduce((s, r) => s + (Number(r.heures) || 0), 0);
+  const totalMontant = inclus.reduce((s, r) => s + (Number(r.montant) || 0), 0);
+  const dates = inclus.map(r => r.date).filter(Boolean).sort();
+  const dateDebut = dates[0] ? fmtJourFr(dates[0]) : '';
+  const dateFin = dates.length ? fmtJourFr(dates[dates.length - 1]) : '';
+
+  const setRow = (key, patch) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
+  const setMetaK = (k, v) => setMeta(m => ({ ...m, [k]: v }));
+  const ajouterLigne = () => setRows(rs => [...rs, { key: 'm' + Date.now(), include: true, manuel: true, cours: '', promo: '', date_heure: '', date: '', heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2) }]);
+  const supprimerLigne = (key) => setRows(rs => rs.filter(r => r.key !== key));
+
+  const generer = async () => {
+    if (inclus.length === 0) { toast('Sélectionne au moins une intervention', 'error'); return; }
+    setBusy(true);
+    try {
+      await chargerDocxLibs();
+      const resp = await fetch(urlTemplateEEC('BDC_Formation.docx'));
+      if (!resp.ok) throw new Error('Template introuvable (templates/BDC_Formation.docx)');
+      const buf = await resp.arrayBuffer();
+      const doc = new window.docxtemplater(new window.PizZip(buf), { paragraphLoop: true, linebreaks: true });
+      const tauxNum = Number(meta.taux) || taux;
+      const lieu = meta.lieu_mode === 'presentiel'
+        ? ('Présentiel — ' + (meta.lieu_detail || '')).trim()
+        : ('Distanciel' + (meta.lieu_detail ? ' — ' + meta.lieu_detail : ''));
+      const nomComplet = `${inter.prenom || ''} ${inter.nom || ''}`.trim();
+      doc.render({
+        num_bdc: meta.num_bdc,
+        raison_sociale: inter.raison_sociale || nomComplet,
+        statut_juridique: inter.statut_juridique || '',
+        siret: inter.siret || '',
+        nda: inter.nda_numero || '',
+        representant: inter.representant_legal || nomComplet,
+        adresse: inter.adresse || inter.ville || '',
+        email: inter.email || '',
+        formation: meta.formation, certification: meta.certification, rncp: meta.rncp,
+        formateur: nomComplet,
+        effectif: meta.effectif || '',
+        duree_session: meta.duree_session || fmtHeuresFr(totalHeures),
+        heures: fmtHeuresFr(totalHeures), taux: fmtMontantFr(tauxNum), total: fmtMontantFr(totalMontant),
+        date_debut: dateDebut, date_fin: dateFin, lieu,
+        sig_j: String(today.getDate()).padStart(2, '0'),
+        sig_m: String(today.getMonth() + 1).padStart(2, '0'),
+        sig_a: String(today.getFullYear()),
+        lignes: inclus.map(r => ({
+          cours: r.cours, promo: r.promo, duree: fmtHeuresFr(r.heures),
+          date_heure: r.date_heure, montant: fmtMontantFr(r.montant),
+        })),
+      });
+      const blob = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const nomFichier = `${meta.num_bdc}_${inter.nom || 'intervenant'}.docx`.replace(/\s+/g, '-');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = nomFichier;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      if (archiver) {
+        try { await db.docsUploadBlobAdmin(inter.id, 'bdc', blob, nomFichier); onArchived && onArchived(); toast('BDC généré et archivé dans la fiche', 'success'); }
+        catch (e) { console.error(e); toast('BDC généré (archivage échoué : ' + (e.message || '') + ')', 'error'); }
+      } else { toast('BDC généré', 'success'); }
+      onClose();
+    } catch (e) {
+      console.error(e);
+      const msg = e.properties && e.properties.errors ? e.properties.errors.map(x => x.message).join(' · ') : (e.message || 'Erreur de génération');
+      toast(msg, 'error');
+    } finally { setBusy(false); }
+  };
+
+  const champManquant = !inter.raison_sociale && !inter.siret;
+  const inputMini = { fontSize: 12, padding: '4px 6px' };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900 }}>
+        <div className="modal-head">
+          <h3>🧾 Générer un BDC — Formation</h3>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        {champManquant && (
+          <div className="text-sm" style={{ background: 'var(--cyan-light)', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+            💡 Les coordonnées prestataire de l’intervenant sont vides — le BDC se remplira avec son nom par défaut. Tu peux les compléter dans l’encart « Coordonnées prestataire » de cet onglet.
+          </div>
+        )}
+
+        {/* Méta : n°, formation, modalités */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>N° du BDC</div>
+            <input type="text" value={meta.num_bdc} onChange={e => setMetaK('num_bdc', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>Action de formation</div>
+            <input type="text" value={meta.formation} onChange={e => setMetaK('formation', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>RNCP</div>
+            <input type="text" value={meta.rncp} onChange={e => setMetaK('rncp', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>Effectif max</div>
+            <input type="text" value={meta.effectif} placeholder="Ex. 15" onChange={e => setMetaK('effectif', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>Taux horaire (€ HT)</div>
+            <input type="number" value={meta.taux} onChange={e => setMetaK('taux', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>Lieu</div>
+            <div className="flex gap-8" style={{ alignItems: 'center' }}>
+              <select value={meta.lieu_mode} onChange={e => setMetaK('lieu_mode', e.target.value)} style={{ width: 110 }}>
+                <option value="presentiel">Présentiel</option>
+                <option value="distanciel">Distanciel</option>
+              </select>
+              <input type="text" value={meta.lieu_detail} placeholder="Détail / adresse" style={{ flex: 1 }}
+                onChange={e => setMetaK('lieu_detail', e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        {/* Tableau des interventions sélectionnables */}
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 700 }}>
+          Interventions confirmées ({confirmees.length}) — coche celles à inclure
+        </div>
+        {rows.length === 0 ? (
+          <div className="text-muted text-sm" style={{ padding: '12px 0' }}>
+            Aucune intervention confirmée 🔒 pour cet intervenant. Confirme des créneaux dans le planning, ou ajoute des lignes manuellement.
+          </div>
+        ) : (
+          <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-alt)', position: 'sticky', top: 0 }}>
+                  <th style={{ padding: '6px 4px', width: 28 }}></th>
+                  <th style={{ padding: '6px 4px', textAlign: 'left' }}>Cours</th>
+                  <th style={{ padding: '6px 4px', textAlign: 'left' }}>Promo</th>
+                  <th style={{ padding: '6px 4px', textAlign: 'left' }}>Date / créneau</th>
+                  <th style={{ padding: '6px 4px', width: 70 }}>Heures</th>
+                  <th style={{ padding: '6px 4px', width: 90 }}>Montant €</th>
+                  <th style={{ padding: '6px 4px', width: 28 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.key} style={{ borderTop: '1px solid var(--border)', opacity: r.include ? 1 : 0.45 }}>
+                    <td style={{ textAlign: 'center' }}>
+                      <input type="checkbox" checked={r.include} onChange={e => setRow(r.key, { include: e.target.checked })} />
+                    </td>
+                    <td><input type="text" value={r.cours} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { cours: e.target.value })} /></td>
+                    <td><input type="text" value={r.promo} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { promo: e.target.value })} /></td>
+                    <td><input type="text" value={r.date_heure} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { date_heure: e.target.value })} /></td>
+                    <td><input type="number" value={r.heures} style={{ ...inputMini, width: 60 }}
+                      onChange={e => { const h = parseFloat(e.target.value) || 0; setRow(r.key, { heures: h, montant: +(h * (Number(meta.taux) || taux)).toFixed(2) }); }} /></td>
+                    <td><input type="number" value={r.montant} style={{ ...inputMini, width: 80 }} onChange={e => setRow(r.key, { montant: parseFloat(e.target.value) || 0 })} /></td>
+                    <td style={{ textAlign: 'center' }}>
+                      {r.manuel && <span style={{ cursor: 'pointer', color: 'var(--danger)' }} title="Retirer" onClick={() => supprimerLigne(r.key)}>✕</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="flex-between" style={{ marginTop: 8, alignItems: 'center' }}>
+          <button className="btn btn-ghost btn-sm" onClick={ajouterLigne}>+ Ajouter une ligne</button>
+          <div className="text-sm" style={{ fontWeight: 600 }}>
+            {inclus.length} ligne{inclus.length > 1 ? 's' : ''} · {fmtHeuresFr(totalHeures)} · <span style={{ color: 'var(--navy)' }}>{fmtMontantFr(totalMontant)} € HT</span>
+            {dateDebut && <span className="text-muted" style={{ fontWeight: 400 }}> · du {dateDebut} au {dateFin}</span>}
+          </div>
+        </div>
+
+        <div className="modal-foot" style={{ justifyContent: 'space-between' }}>
+          <label className="flex gap-8 text-sm" style={{ alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={archiver} onChange={e => setArchiver(e.target.checked)} />
+            Archiver une copie dans la fiche
+          </label>
+          <div className="flex gap-8">
+            <button className="btn btn-ghost" onClick={onClose}>Annuler</button>
+            <button className="btn btn-primary" disabled={busy || inclus.length === 0} onClick={generer}>
+              {busy ? 'Génération…' : '⬇ Générer le BDC (.docx)'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ---- LISTE INTERVENANTS ----
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
@@ -297,6 +608,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   // État de la modale de suppression définitive
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  // État de la modale de génération de BDC
+  const [showGenBDC, setShowGenBDC] = useState(false);
 
   const load = async () => {
     const i = await db.getIntervenant(intervenantId);
@@ -780,13 +1093,29 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           )}
 
           {tab === 'facturation' && (
-            <div className="card">
-              <div className="card-title">Facturation — Bons de commande</div>
-              <div className="help" style={{ marginBottom: 12 }}>
-                Stocke ici les BDC signés par l’intervenant (PDF). L’émission directe des BDC depuis la plateforme est prévue.
+            <React.Fragment>
+              <PrestataireEditor inter={inter} onSaved={load} />
+
+              <div className="card">
+                <div className="flex-between" style={{ alignItems: 'flex-start', gap: 16, marginBottom: 4 }}>
+                  <div>
+                    <div className="card-title" style={{ marginBottom: 2 }}>Émission de documents</div>
+                    <div className="help">Génère un BDC pré-rempli depuis les interventions confirmées 🔒 de l’intervenant, sur la période de ton choix.</div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => setShowGenBDC(true)}>
+                    <Icon name="download" size={12} /> Générer un BDC
+                  </button>
+                </div>
               </div>
-              <GestionDocuments mode="admin" intervenantId={inter.id} categories={BDC_CATEGORIES} />
-            </div>
+
+              <div className="card">
+                <div className="card-title">Documents stockés (BDC &amp; contrats)</div>
+                <div className="help" style={{ marginBottom: 12 }}>
+                  Les documents générés peuvent être archivés ici. Tu peux aussi y déposer les versions signées (PDF).
+                </div>
+                <GestionDocuments mode="admin" intervenantId={inter.id} categories={BDC_CATEGORIES} />
+              </div>
+            </React.Fragment>
           )}
 
           {tab === 'profil' && (
@@ -964,6 +1293,17 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
             </div>
           </div>
         </div>
+      )}
+      {showGenBDC && (
+        <ModalGenererBDC
+          inter={inter}
+          assignations={assignations}
+          promos={promos}
+          niveaux={niveaux}
+          modules={modules}
+          onClose={() => setShowGenBDC(false)}
+          onArchived={load}
+        />
       )}
     </div>
   );

@@ -1036,6 +1036,20 @@ window.db = {
     if (error) throw error;
     return data.signedUrl;
   },
+  // Archiver un document déjà constitué (Blob généré, ex. BDC docx). type = 'bdc' | 'contrat' | …
+  async docsUploadBlobAdmin(intervenantId, type, blob, filename) {
+    const ext = (String(filename).split('.').pop() || 'docx').toLowerCase();
+    const path = `${intervenantId}/${type}/${crypto.randomUUID()}.${ext}`;
+    const up = await _client.storage.from('intervenant-docs')
+      .upload(path, blob, { contentType: blob.type || 'application/octet-stream', upsert: false });
+    if (up.error) throw up.error;
+    const { data, error } = await _client.from('intervenant_documents').insert({
+      intervenant_id: intervenantId, type, file_path: path,
+      file_name: filename, taille: blob.size, uploaded_by: 'admin',
+    }).select().single();
+    if (error) throw error;
+    return data;
+  },
   async docsDelete(doc) {
     await _client.storage.from('intervenant-docs').remove([doc.file_path]);
     const { error } = await _client.from('intervenant_documents').delete().eq('id', doc.id);

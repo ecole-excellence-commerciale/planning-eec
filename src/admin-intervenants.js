@@ -365,6 +365,258 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, onClos
   );
 };
 
+// Modale de génération d'un contrat de prestation (avec ou sans annexe BDC)
+const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, onClose, onArchived }) => {
+  const toast = useToast();
+  const HEURES_DEMI = ((window.EEC_CONFIG && window.EEC_CONFIG.HEURES_PAR_JOUR) || window.HEURES_PAR_JOUR || 7) / 2;
+  const taux = Number(inter.taux_horaire) || 0;
+  const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
+  const niveauById = useMemo(() => Object.fromEntries(niveaux.map(n => [n.id, n])), [niveaux]);
+  const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
+  const joursCourts = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+  const fmtDH = (a) => { const d = new Date(a.date_jour + 'T00:00:00'); return `${joursCourts[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} — ${a.periode === 'am' ? 'matin' : 'après-midi'}`; };
+  const fmtJourFr = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
+
+  const confirmees = useMemo(() => assignations
+    .filter(a => a.statut_validation === 'confirme' && a.module_id)
+    .sort((a, b) => a.date_jour.localeCompare(b.date_jour) || (a.periode === 'am' ? -1 : 1)), [assignations]);
+  const niveauDominant = useMemo(() => {
+    const c = {};
+    confirmees.forEach(a => { const nv = niveauById[promoById[a.promo_id]?.niveau_id]?.label; if (nv) c[nv] = (c[nv] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Bac+2';
+  }, [confirmees]);
+  const rncpDef = RNCP_PAR_NIVEAU[niveauDominant] || { formation: '', certification: '', rncp: '' };
+
+  const today = new Date();
+  const dCode = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+  const [mode, setMode] = useState('avec'); // 'avec' (annexe BDC) | 'sans'
+  const [meta, setMeta] = useState({
+    num_contrat: `CONTRAT-${dCode}`,
+    num_bdc: `BDC-${dCode}`,
+    formateur: `${inter.prenom || ''} ${inter.nom || ''}`.trim(),
+    formation: rncpDef.formation, certification: rncpDef.certification, rncp: rncpDef.rncp,
+    effectif: '', duree_session: '', lieu_mode: 'presentiel', lieu_detail: '103 rue Caulaincourt, 75018 Paris',
+    taux: String(taux || ''),
+  });
+  const [rows, setRows] = useState(() => confirmees.map(a => ({
+    key: a.id, include: true, manuel: false,
+    cours: moduleById[a.module_id]?.label || '', promo: promoById[a.promo_id]?.label || '',
+    date_heure: fmtDH(a), date: a.date_jour, heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
+  })));
+  const [archiver, setArchiver] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const inclus = rows.filter(r => r.include);
+  const totalHeures = inclus.reduce((s, r) => s + (Number(r.heures) || 0), 0);
+  const totalMontant = inclus.reduce((s, r) => s + (Number(r.montant) || 0), 0);
+  const dates = inclus.map(r => r.date).filter(Boolean).sort();
+  const dateDebut = dates[0] ? fmtJourFr(dates[0]) : '';
+  const dateFin = dates.length ? fmtJourFr(dates[dates.length - 1]) : '';
+  const setRow = (key, patch) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
+  const setMetaK = (k, v) => setMeta(m => ({ ...m, [k]: v }));
+  const ajouterLigne = () => setRows(rs => [...rs, { key: 'm' + Date.now(), include: true, manuel: true, cours: '', promo: '', date_heure: '', date: '', heures: HEURES_DEMI, montant: +(HEURES_DEMI * (Number(meta.taux) || taux)).toFixed(2) }]);
+  const supprimerLigne = (key) => setRows(rs => rs.filter(r => r.key !== key));
+
+  const generer = async () => {
+    if (mode === 'avec' && inclus.length === 0) { toast('Sélectionne au moins une intervention pour l’annexe', 'error'); return; }
+    setBusy(true);
+    try {
+      await chargerDocxLibs();
+      const fichier = mode === 'avec' ? 'Contrat_avec_annexe.docx' : 'Contrat_sans_annexe.docx';
+      const resp = await fetch(urlTemplateEEC(fichier));
+      if (!resp.ok) throw new Error('Template introuvable (templates/' + fichier + ')');
+      const buf = await resp.arrayBuffer();
+      const doc = new window.docxtemplater(new window.PizZip(buf), { paragraphLoop: true, linebreaks: true });
+      const nomComplet = `${inter.prenom || ''} ${inter.nom || ''}`.trim();
+      const tauxNum = Number(meta.taux) || taux;
+      const lieu = meta.lieu_mode === 'presentiel'
+        ? ('Présentiel — ' + (meta.lieu_detail || '')).trim()
+        : ('Distanciel' + (meta.lieu_detail ? ' — ' + meta.lieu_detail : ''));
+      const data = {
+        num_contrat: meta.num_contrat, num_bdc: meta.num_bdc,
+        raison_sociale: inter.raison_sociale || nomComplet,
+        statut_juridique: inter.statut_juridique || '',
+        siret: inter.siret || '', adresse: inter.adresse || inter.ville || '',
+        representant: inter.representant_legal || nomComplet,
+        formateur: meta.formateur || nomComplet,
+        sig_j: String(today.getDate()).padStart(2, '0'),
+        sig_m: String(today.getMonth() + 1).padStart(2, '0'),
+        sig_a: String(today.getFullYear()),
+      };
+      if (mode === 'avec') {
+        Object.assign(data, {
+          nda: inter.nda_numero || '', email: inter.email || '',
+          formation: meta.formation, certification: meta.certification, rncp: meta.rncp,
+          effectif: meta.effectif || '', duree_session: meta.duree_session || fmtHeuresFr(totalHeures),
+          heures: fmtHeuresFr(totalHeures), taux: fmtMontantFr(tauxNum), total: fmtMontantFr(totalMontant),
+          date_debut: dateDebut, date_fin: dateFin, lieu,
+          lignes: inclus.map(r => ({ cours: r.cours, promo: r.promo, duree: fmtHeuresFr(r.heures), date_heure: r.date_heure, montant: fmtMontantFr(r.montant) })),
+        });
+      }
+      doc.render(data);
+      const blob = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const nomFichier = `${meta.num_contrat}_${inter.nom || 'intervenant'}.docx`.replace(/\s+/g, '-');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = nomFichier;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      if (archiver) {
+        try { await db.docsUploadBlobAdmin(inter.id, 'contrat', blob, nomFichier); onArchived && onArchived(); toast('Contrat généré et archivé dans la fiche', 'success'); }
+        catch (e) { console.error(e); toast('Contrat généré (archivage échoué : ' + (e.message || '') + ')', 'error'); }
+      } else { toast('Contrat généré', 'success'); }
+      onClose();
+    } catch (e) {
+      console.error(e);
+      const msg = e.properties && e.properties.errors ? e.properties.errors.map(x => x.message).join(' · ') : (e.message || 'Erreur de génération');
+      toast(msg, 'error');
+    } finally { setBusy(false); }
+  };
+
+  const champManquant = !inter.raison_sociale && !inter.siret;
+  const inputMini = { fontSize: 12, padding: '4px 6px' };
+  const segBtn = (actif) => ({ flex: 1, padding: '7px 10px', cursor: 'pointer', textAlign: 'center', fontSize: 13, fontWeight: 600, borderRadius: 6, background: actif ? 'var(--navy)' : 'transparent', color: actif ? '#fff' : 'var(--text)' });
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900 }}>
+        <div className="modal-head">
+          <h3>📜 Générer un contrat de prestation</h3>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        {/* Choix du type de contrat */}
+        <div style={{ display: 'flex', gap: 4, padding: 4, background: 'var(--bg-alt)', borderRadius: 8, marginBottom: 12 }}>
+          <div style={segBtn(mode === 'avec')} onClick={() => setMode('avec')}>Avec annexe (1er BDC inclus)</div>
+          <div style={segBtn(mode === 'sans')} onClick={() => setMode('sans')}>Sans annexe (BDC séparé)</div>
+        </div>
+
+        {champManquant && (
+          <div className="text-sm" style={{ background: 'var(--cyan-light)', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+            💡 Coordonnées prestataire vides — le contrat se remplira avec le nom de l’intervenant par défaut. Complète-les dans l’encart « Coordonnées prestataire ».
+          </div>
+        )}
+
+        {/* Champs contrat */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>N° du contrat</div>
+            <input type="text" value={meta.num_contrat} onChange={e => setMetaK('num_contrat', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>N° du 1er BDC {mode === 'avec' ? '(annexe)' : '(transmis à part)'}</div>
+            <input type="text" value={meta.num_bdc} onChange={e => setMetaK('num_bdc', e.target.value)} />
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <div className="label" style={{ fontSize: 10 }}>Formateur désigné</div>
+            <input type="text" value={meta.formateur} onChange={e => setMetaK('formateur', e.target.value)} />
+          </div>
+        </div>
+
+        {/* Section annexe BDC (mode avec) */}
+        {mode === 'avec' && (
+          <React.Fragment>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 0 8px', fontWeight: 700 }}>
+              Annexe — Bon de commande Formation
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <div className="label" style={{ fontSize: 10 }}>Action de formation</div>
+                <input type="text" value={meta.formation} onChange={e => setMetaK('formation', e.target.value)} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <div className="label" style={{ fontSize: 10 }}>RNCP</div>
+                <input type="text" value={meta.rncp} onChange={e => setMetaK('rncp', e.target.value)} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <div className="label" style={{ fontSize: 10 }}>Effectif max</div>
+                <input type="text" value={meta.effectif} placeholder="Ex. 15" onChange={e => setMetaK('effectif', e.target.value)} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <div className="label" style={{ fontSize: 10 }}>Taux horaire (€ HT)</div>
+                <input type="number" value={meta.taux} onChange={e => setMetaK('taux', e.target.value)} />
+              </div>
+              <div className="field" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+                <div className="label" style={{ fontSize: 10 }}>Lieu</div>
+                <div className="flex gap-8" style={{ alignItems: 'center' }}>
+                  <select value={meta.lieu_mode} onChange={e => setMetaK('lieu_mode', e.target.value)} style={{ width: 110 }}>
+                    <option value="presentiel">Présentiel</option>
+                    <option value="distanciel">Distanciel</option>
+                  </select>
+                  <input type="text" value={meta.lieu_detail} placeholder="Détail / adresse" style={{ flex: 1 }} onChange={e => setMetaK('lieu_detail', e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, fontWeight: 700 }}>
+              Interventions confirmées ({confirmees.length}) — coche celles à inclure
+            </div>
+            {rows.length === 0 ? (
+              <div className="text-muted text-sm" style={{ padding: '12px 0' }}>
+                Aucune intervention confirmée 🔒. Confirme des créneaux dans le planning, ou ajoute des lignes manuellement.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: 'var(--bg-alt)', position: 'sticky', top: 0 }}>
+                      <th style={{ padding: '6px 4px', width: 28 }}></th>
+                      <th style={{ padding: '6px 4px', textAlign: 'left' }}>Cours</th>
+                      <th style={{ padding: '6px 4px', textAlign: 'left' }}>Promo</th>
+                      <th style={{ padding: '6px 4px', textAlign: 'left' }}>Date / créneau</th>
+                      <th style={{ padding: '6px 4px', width: 70 }}>Heures</th>
+                      <th style={{ padding: '6px 4px', width: 90 }}>Montant €</th>
+                      <th style={{ padding: '6px 4px', width: 28 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => (
+                      <tr key={r.key} style={{ borderTop: '1px solid var(--border)', opacity: r.include ? 1 : 0.45 }}>
+                        <td style={{ textAlign: 'center' }}><input type="checkbox" checked={r.include} onChange={e => setRow(r.key, { include: e.target.checked })} /></td>
+                        <td><input type="text" value={r.cours} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { cours: e.target.value })} /></td>
+                        <td><input type="text" value={r.promo} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { promo: e.target.value })} /></td>
+                        <td><input type="text" value={r.date_heure} style={{ ...inputMini, width: '100%' }} onChange={e => setRow(r.key, { date_heure: e.target.value })} /></td>
+                        <td><input type="number" value={r.heures} style={{ ...inputMini, width: 60 }} onChange={e => { const h = parseFloat(e.target.value) || 0; setRow(r.key, { heures: h, montant: +(h * (Number(meta.taux) || taux)).toFixed(2) }); }} /></td>
+                        <td><input type="number" value={r.montant} style={{ ...inputMini, width: 80 }} onChange={e => setRow(r.key, { montant: parseFloat(e.target.value) || 0 })} /></td>
+                        <td style={{ textAlign: 'center' }}>{r.manuel && <span style={{ cursor: 'pointer', color: 'var(--danger)' }} title="Retirer" onClick={() => supprimerLigne(r.key)}>✕</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="flex-between" style={{ marginTop: 8, alignItems: 'center' }}>
+              <button className="btn btn-ghost btn-sm" onClick={ajouterLigne}>+ Ajouter une ligne</button>
+              <div className="text-sm" style={{ fontWeight: 600 }}>
+                {inclus.length} ligne{inclus.length > 1 ? 's' : ''} · {fmtHeuresFr(totalHeures)} · <span style={{ color: 'var(--navy)' }}>{fmtMontantFr(totalMontant)} € HT</span>
+                {dateDebut && <span className="text-muted" style={{ fontWeight: 400 }}> · du {dateDebut} au {dateFin}</span>}
+              </div>
+            </div>
+          </React.Fragment>
+        )}
+
+        {mode === 'sans' && (
+          <div className="text-sm text-muted" style={{ padding: '4px 0 8px' }}>
+            Le 1er bon de commande sera transmis séparément (génère-le ensuite via « Générer un BDC »).
+          </div>
+        )}
+
+        <div className="modal-foot" style={{ justifyContent: 'space-between' }}>
+          <label className="flex gap-8 text-sm" style={{ alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={archiver} onChange={e => setArchiver(e.target.checked)} />
+            Archiver une copie dans la fiche
+          </label>
+          <div className="flex gap-8">
+            <button className="btn btn-ghost" onClick={onClose}>Annuler</button>
+            <button className="btn btn-primary" disabled={busy || (mode === 'avec' && inclus.length === 0)} onClick={generer}>
+              {busy ? 'Génération…' : '⬇ Générer le contrat (.docx)'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ---- LISTE INTERVENANTS ----
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
@@ -610,6 +862,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   // État de la modale de génération de BDC
   const [showGenBDC, setShowGenBDC] = useState(false);
+  // État de la modale de génération de contrat
+  const [showGenContrat, setShowGenContrat] = useState(false);
 
   const load = async () => {
     const i = await db.getIntervenant(intervenantId);
@@ -1100,11 +1354,16 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                 <div className="flex-between" style={{ alignItems: 'flex-start', gap: 16, marginBottom: 4 }}>
                   <div>
                     <div className="card-title" style={{ marginBottom: 2 }}>Émission de documents</div>
-                    <div className="help">Génère un BDC pré-rempli depuis les interventions confirmées 🔒 de l’intervenant, sur la période de ton choix.</div>
+                    <div className="help">Génère un BDC ou un contrat pré-rempli depuis les interventions confirmées 🔒 de l’intervenant.</div>
                   </div>
-                  <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => setShowGenBDC(true)}>
-                    <Icon name="download" size={12} /> Générer un BDC
-                  </button>
+                  <div className="flex gap-8" style={{ flexShrink: 0 }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setShowGenContrat(true)}>
+                      <Icon name="download" size={12} /> Générer un contrat
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={() => setShowGenBDC(true)}>
+                      <Icon name="download" size={12} /> Générer un BDC
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1302,6 +1561,17 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           niveaux={niveaux}
           modules={modules}
           onClose={() => setShowGenBDC(false)}
+          onArchived={load}
+        />
+      )}
+      {showGenContrat && (
+        <ModalGenererContrat
+          inter={inter}
+          assignations={assignations}
+          promos={promos}
+          niveaux={niveaux}
+          modules={modules}
+          onClose={() => setShowGenContrat(false)}
           onArchived={load}
         />
       )}

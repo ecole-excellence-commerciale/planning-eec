@@ -85,6 +85,21 @@ const urlTemplateEEC = (fichier) => {
   const base = window.location.origin + window.location.pathname.replace(/index\.html$/, '');
   return base + 'templates/' + fichier;
 };
+// Horaires réels des demi-journées (pour la colonne "Date et heure" des BDC)
+const HORAIRES_DEMI = { am: '9h30-13h', pm: '14h-17h30' };
+const _JOURS_COURTS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+const fmtDateHeureBDC = (a) => {
+  const d = new Date(a.date_jour + 'T00:00:00');
+  const jdate = `${_JOURS_COURTS[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const h = HORAIRES_DEMI[a.periode];
+  return h ? `${jdate} — ${h}` : jdate;
+};
+// Intitulé du cours enrichi de sa catégorie : "Module (Catégorie)"
+const labelCoursAvecCategorie = (mod, catById) => {
+  if (!mod) return '';
+  const cat = catById && catById[mod.categorie_id];
+  return cat ? `${mod.label} (${cat.label})` : (mod.label || '');
+};
 
 // Éditeur des coordonnées prestataire (réutilisées dans tous les documents)
 const PRESTA_CHAMPS = [
@@ -133,13 +148,14 @@ const PrestataireEditor = ({ inter, onSaved }) => {
 };
 
 // Modale de génération d'un BDC Formation
-const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, onClose, onArchived }) => {
+const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, categories, onClose, onArchived }) => {
   const toast = useToast();
   const HEURES_DEMI = ((window.EEC_CONFIG && window.EEC_CONFIG.HEURES_PAR_JOUR) || window.HEURES_PAR_JOUR || 7) / 2;
   const taux = Number(inter.taux_horaire) || 0;
   const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
   const niveauById = useMemo(() => Object.fromEntries(niveaux.map(n => [n.id, n])), [niveaux]);
   const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
+  const catById = useMemo(() => Object.fromEntries((categories || []).map(c => [c.id, c])), [categories]);
 
   const joursCourts = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
   const fmtDH = (a) => {
@@ -161,9 +177,9 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, onClos
 
   const [rows, setRows] = useState(() => confirmees.map(a => ({
     key: a.id, include: true, manuel: false,
-    cours: moduleById[a.module_id]?.label || '',
+    cours: labelCoursAvecCategorie(moduleById[a.module_id], catById),
     promo: promoById[a.promo_id]?.label || '',
-    date_heure: fmtDH(a), date: a.date_jour,
+    date_heure: fmtDateHeureBDC(a), date: a.date_jour,
     heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
   })));
 
@@ -366,13 +382,14 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, onClos
 };
 
 // Modale de génération d'un contrat de prestation (avec ou sans annexe BDC)
-const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, onClose, onArchived }) => {
+const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, categories, onClose, onArchived }) => {
   const toast = useToast();
   const HEURES_DEMI = ((window.EEC_CONFIG && window.EEC_CONFIG.HEURES_PAR_JOUR) || window.HEURES_PAR_JOUR || 7) / 2;
   const taux = Number(inter.taux_horaire) || 0;
   const promoById = useMemo(() => Object.fromEntries(promos.map(p => [p.id, p])), [promos]);
   const niveauById = useMemo(() => Object.fromEntries(niveaux.map(n => [n.id, n])), [niveaux]);
   const moduleById = useMemo(() => Object.fromEntries(modules.map(m => [m.id, m])), [modules]);
+  const catById = useMemo(() => Object.fromEntries((categories || []).map(c => [c.id, c])), [categories]);
   const joursCourts = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
   const fmtDH = (a) => { const d = new Date(a.date_jour + 'T00:00:00'); return `${joursCourts[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} — ${a.periode === 'am' ? 'matin' : 'après-midi'}`; };
   const fmtJourFr = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; };
@@ -400,8 +417,8 @@ const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, on
   });
   const [rows, setRows] = useState(() => confirmees.map(a => ({
     key: a.id, include: true, manuel: false,
-    cours: moduleById[a.module_id]?.label || '', promo: promoById[a.promo_id]?.label || '',
-    date_heure: fmtDH(a), date: a.date_jour, heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
+    cours: labelCoursAvecCategorie(moduleById[a.module_id], catById), promo: promoById[a.promo_id]?.label || '',
+    date_heure: fmtDateHeureBDC(a), date: a.date_jour, heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
   })));
   const [archiver, setArchiver] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -1560,6 +1577,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           promos={promos}
           niveaux={niveaux}
           modules={modules}
+          categories={categories}
           onClose={() => setShowGenBDC(false)}
           onArchived={load}
         />
@@ -1571,6 +1589,7 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           promos={promos}
           niveaux={niveaux}
           modules={modules}
+          categories={categories}
           onClose={() => setShowGenContrat(false)}
           onArchived={load}
         />

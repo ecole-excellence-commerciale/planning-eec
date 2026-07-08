@@ -178,7 +178,7 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, catego
   const [rows, setRows] = useState(() => confirmees.map(a => ({
     key: a.id, include: true, manuel: false,
     cours: labelCoursAvecCategorie(moduleById[a.module_id], catById),
-    promo: promoById[a.promo_id]?.label || '',
+    promo: promoById[a.promo_id]?.label || '', promo_id: a.promo_id || null,
     date_heure: fmtDateHeureBDC(a), date: a.date_jour,
     heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
   })));
@@ -249,10 +249,23 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, catego
       const link = document.createElement('a'); link.href = url; link.download = nomFichier;
       document.body.appendChild(link); link.click(); document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      let archId = null;
       if (archiver) {
-        try { await db.docsUploadBlobAdmin(inter.id, 'bdc', blob, nomFichier); onArchived && onArchived(); toast('BDC généré et archivé dans la fiche', 'success'); }
+        try { const arch = await db.docsUploadBlobAdmin(inter.id, 'bdc', blob, nomFichier); archId = arch && arch.id; onArchived && onArchived(); toast('BDC généré et archivé dans la fiche', 'success'); }
         catch (e) { console.error(e); toast('BDC généré (archivage échoué : ' + (e.message || '') + ')', 'error'); }
       } else { toast('BDC généré', 'success'); }
+      // Ligne de facturation (BDC émis = facturé), dédoublonnée par n° de BDC
+      try {
+        const pids = inclus.map(r => r.promo_id).filter(Boolean);
+        const promoDom = pids.length ? pids.slice().sort((a, b) => pids.filter(x => x === b).length - pids.filter(x => x === a).length)[0] : null;
+        await db.saveFacturationBDC({
+          num_bdc: meta.num_bdc, intervenant_id: inter.id, promo_id: promoDom,
+          libelle: `${meta.num_bdc} — ${meta.formation || nomComplet}`,
+          periode_debut: dates[0] || null, periode_fin: dates.length ? dates[dates.length - 1] : null,
+          heures: totalHeures, taux: tauxNum, montant: totalMontant, document_id: archId,
+        });
+        onArchived && onArchived();
+      } catch (e) { console.error(e); toast('Ligne de facturation non créée : ' + (e.message || ''), 'error'); }
       onClose();
     } catch (e) {
       console.error(e);
@@ -417,7 +430,7 @@ const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, ca
   });
   const [rows, setRows] = useState(() => confirmees.map(a => ({
     key: a.id, include: true, manuel: false,
-    cours: labelCoursAvecCategorie(moduleById[a.module_id], catById), promo: promoById[a.promo_id]?.label || '',
+    cours: labelCoursAvecCategorie(moduleById[a.module_id], catById), promo: promoById[a.promo_id]?.label || '', promo_id: a.promo_id || null,
     date_heure: fmtDateHeureBDC(a), date: a.date_jour, heures: HEURES_DEMI, montant: +(HEURES_DEMI * taux).toFixed(2),
   })));
   const [archiver, setArchiver] = useState(true);
@@ -477,10 +490,25 @@ const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, ca
       const link = document.createElement('a'); link.href = url; link.download = nomFichier;
       document.body.appendChild(link); link.click(); document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      let archId = null;
       if (archiver) {
-        try { await db.docsUploadBlobAdmin(inter.id, 'contrat', blob, nomFichier); onArchived && onArchived(); toast('Contrat généré et archivé dans la fiche', 'success'); }
+        try { const arch = await db.docsUploadBlobAdmin(inter.id, 'contrat', blob, nomFichier); archId = arch && arch.id; onArchived && onArchived(); toast('Contrat généré et archivé dans la fiche', 'success'); }
         catch (e) { console.error(e); toast('Contrat généré (archivage échoué : ' + (e.message || '') + ')', 'error'); }
       } else { toast('Contrat généré', 'success'); }
+      // Contrat AVEC annexe = embarque un BDC Formation -> crée la ligne de facturation
+      if (mode === 'avec') {
+        try {
+          const pids = inclus.map(r => r.promo_id).filter(Boolean);
+          const promoDom = pids.length ? pids.slice().sort((a, b) => pids.filter(x => x === b).length - pids.filter(x => x === a).length)[0] : null;
+          await db.saveFacturationBDC({
+            num_bdc: meta.num_bdc, intervenant_id: inter.id, promo_id: promoDom,
+            libelle: `${meta.num_bdc} — ${meta.formation || nomComplet} (annexe contrat ${meta.num_contrat})`,
+            periode_debut: dates[0] || null, periode_fin: dates.length ? dates[dates.length - 1] : null,
+            heures: totalHeures, taux: tauxNum, montant: totalMontant, document_id: archId,
+          });
+          onArchived && onArchived();
+        } catch (e) { console.error(e); toast('Ligne de facturation non créée : ' + (e.message || ''), 'error'); }
+      }
       onClose();
     } catch (e) {
       console.error(e);

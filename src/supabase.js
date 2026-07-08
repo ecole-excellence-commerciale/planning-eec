@@ -225,6 +225,34 @@ window.db = {
     const { error } = await _client.from('facturations').delete().eq('id', id);
     if (error) throw error;
   },
+  // Crée/actualise la ligne de facturation d'un BDC (BDC émis = facturé).
+  // Dédoublonnage par (source='bdc', num_bdc, intervenant) : régénérer met à jour au lieu de dupliquer.
+  async saveFacturationBDC(p) {
+    const base = {
+      intervenant_id: p.intervenant_id || null,
+      promo_id: p.promo_id || null,
+      libelle: p.libelle || null,
+      periode_debut: p.periode_debut || null,
+      periode_fin: p.periode_fin || null,
+      heures: (p.heures ?? null),
+      taux: (p.taux ?? null),
+      montant: (p.montant ?? null),
+      document_id: p.document_id || null,
+      num_bdc: p.num_bdc || null,
+      statut: 'facture', source: 'bdc', avant_coupure: false,
+    };
+    let q = _client.from('facturations').select('id').eq('source', 'bdc').eq('num_bdc', p.num_bdc);
+    if (p.intervenant_id) q = q.eq('intervenant_id', p.intervenant_id);
+    const { data: existing } = await q.maybeSingle();
+    if (existing) {
+      const { error } = await _client.from('facturations').update(base).eq('id', existing.id);
+      if (error) throw error;
+      return existing.id;
+    }
+    const { data, error } = await _client.from('facturations').insert(base).select('id').single();
+    if (error) throw error;
+    return data.id;
+  },
   // Engagement prévisionnel : tous les créneaux planifiés avec un intervenant (1 ligne = une demi-journée)
   async getPlanningEngagement() {
     const { data, error } = await _client.from('promo_planning')

@@ -227,6 +227,17 @@ window.db = {
   },
   // Crée/actualise la ligne de facturation d'un BDC (BDC émis = facturé).
   // Dédoublonnage par (source='bdc', num_bdc, intervenant) : régénérer met à jour au lieu de dupliquer.
+  // Prochain n° de BDC libre pour une base 'BDC-AAAA-MMJJ' (suffixe -2, -3… si déjà pris ce jour-là)
+  async getProchainNumBDC(base) {
+    const { data, error } = await _client.from('facturations')
+      .select('num_bdc').eq('source', 'bdc').like('num_bdc', base + '%');
+    if (error) throw error;
+    const pris = new Set((data || []).map(r => r.num_bdc));
+    if (!pris.has(base)) return base;
+    let n = 2;
+    while (pris.has(`${base}-${n}`)) n++;
+    return `${base}-${n}`;
+  },
   async saveFacturationBDC(p) {
     const base = {
       intervenant_id: p.intervenant_id || null,

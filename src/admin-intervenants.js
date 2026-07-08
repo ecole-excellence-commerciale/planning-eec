@@ -194,6 +194,12 @@ const ModalGenererBDC = ({ inter, assignations, promos, niveaux, modules, catego
   const [archiver, setArchiver] = useState(true);
   const [busy, setBusy] = useState(false);
 
+  // À l'ouverture : proposer le prochain n° de BDC libre (suffixe -2, -3… ; n'écrase pas une saisie manuelle)
+  useEffect(() => {
+    const base = meta.num_bdc;
+    db.getProchainNumBDC(base).then(n => { if (n) setMeta(m => (m.num_bdc === base ? { ...m, num_bdc: n } : m)); }).catch(() => {});
+  }, []);
+
   const inclus = rows.filter(r => r.include);
   const totalHeures = inclus.reduce((s, r) => s + (Number(r.heures) || 0), 0);
   const totalMontant = inclus.reduce((s, r) => s + (Number(r.montant) || 0), 0);
@@ -435,6 +441,12 @@ const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, ca
   })));
   const [archiver, setArchiver] = useState(true);
   const [busy, setBusy] = useState(false);
+
+  // À l'ouverture : proposer le prochain n° de BDC libre (suffixe -2, -3… ; n'écrase pas une saisie manuelle)
+  useEffect(() => {
+    const base = meta.num_bdc;
+    db.getProchainNumBDC(base).then(n => { if (n) setMeta(m => (m.num_bdc === base ? { ...m, num_bdc: n } : m)); }).catch(() => {});
+  }, []);
 
   const inclus = rows.filter(r => r.include);
   const totalHeures = inclus.reduce((s, r) => s + (Number(r.heures) || 0), 0);

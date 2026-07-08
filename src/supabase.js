@@ -192,6 +192,47 @@ window.db = {
     return data;
   },
 
+  // ---- Budget / Suivi facturation ----
+  async getParametre(cle) {
+    const { data, error } = await _client.from('parametres').select('valeur').eq('cle', cle).maybeSingle();
+    if (error) throw error;
+    return data ? data.valeur : null;
+  },
+  async setParametre(cle, valeur) {
+    const { error } = await _client.from('parametres')
+      .upsert({ cle, valeur, updated_at: new Date().toISOString() }, { onConflict: 'cle' });
+    if (error) throw error;
+  },
+  async getBudgets() {
+    const { data, error } = await _client.from('budgets').select('*').order('ref');
+    if (error) throw error;
+    return data;
+  },
+  async updateBudget(id, patch) {
+    const { error } = await _client.from('budgets').update(patch).eq('id', id);
+    if (error) throw error;
+  },
+  async getFacturations() {
+    const { data, error } = await _client.from('facturations').select('*').order('periode_debut', { ascending: false });
+    if (error) throw error;
+    return data;
+  },
+  async updateFacturation(id, patch) {
+    const { error } = await _client.from('facturations').update(patch).eq('id', id);
+    if (error) throw error;
+  },
+  async deleteFacturation(id) {
+    const { error } = await _client.from('facturations').delete().eq('id', id);
+    if (error) throw error;
+  },
+  // Engagement prévisionnel : tous les créneaux planifiés avec un intervenant (1 ligne = une demi-journée)
+  async getPlanningEngagement() {
+    const { data, error } = await _client.from('promo_planning')
+      .select('intervenant_id, promo_id').not('intervenant_id', 'is', null);
+    if (error) throw error;
+    return data;
+  },
+
   async addModule(categorieId, label, ordre, sousCategorieId = null) {
     // Si pas de sous-catégorie spécifiée, prendre la "Général" de la catégorie
     let scId = sousCategorieId;

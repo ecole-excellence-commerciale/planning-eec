@@ -674,6 +674,163 @@ const ModalGenererContrat = ({ inter, assignations, promos, niveaux, modules, ca
   );
 };
 
+// ---- MODALE : BDC Ingénierie pédagogique (livrables en saisie manuelle) ----
+const ModalGenererBDCIngenierie = ({ inter, promos = [], onClose, onArchived }) => {
+  const toast = useToast();
+  const today = new Date();
+  const fmtISOFr = (iso) => iso ? iso.split('-').reverse().join('/') : '';
+  const nomComplet = `${inter.prenom || ''} ${inter.nom || ''}`.trim();
+  const champManquant = !inter.raison_sociale && !inter.siret;
+
+  const [meta, setMeta] = useState({
+    num_bdc: `BDC-${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`,
+    objet: '', detail_livrable: '', date_debut: '', date_fin: '', promo_id: '',
+  });
+  const [rows, setRows] = useState([{ key: 1, livrable: '', date_limite: '', remuneration: '' }]);
+  const [archiver, setArchiver] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const base = meta.num_bdc;
+    db.getProchainNumBDC(base).then(n => { if (n) setMeta(m => (m.num_bdc === base ? { ...m, num_bdc: n } : m)); }).catch(() => {});
+  }, []);
+
+  const setRow = (key, patch) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
+  const addRow = () => setRows(rs => [...rs, { key: Date.now(), livrable: '', date_limite: '', remuneration: '' }]);
+  const delRow = (key) => setRows(rs => rs.length > 1 ? rs.filter(r => r.key !== key) : rs);
+
+  const valides = rows.filter(r => r.livrable.trim() && (Number(r.remuneration) || 0) > 0);
+  const total = valides.reduce((s, r) => s + (Number(r.remuneration) || 0), 0);
+
+  const generer = async () => {
+    if (!meta.objet.trim()) { toast('Renseigne l’objet de la prestation', 'error'); return; }
+    if (valides.length === 0) { toast('Ajoute au moins un livrable avec une rémunération', 'error'); return; }
+    setBusy(true);
+    try {
+      await chargerDocxLibs();
+      const resp = await fetch(urlTemplateEEC('BDC_Ingenierie.docx'));
+      if (!resp.ok) throw new Error('Template introuvable (templates/BDC_Ingenierie.docx)');
+      const buf = await resp.arrayBuffer();
+      const doc = new window.docxtemplater(new window.PizZip(buf), { paragraphLoop: true, linebreaks: true });
+      doc.render({
+        num_bdc: meta.num_bdc,
+        raison_sociale: inter.raison_sociale || nomComplet,
+        statut_juridique: inter.statut_juridique || '',
+        siret: inter.siret || '',
+        nda: inter.nda_numero || '',
+        representant: inter.representant_legal || nomComplet,
+        adresse: inter.adresse || inter.ville || '',
+        email: inter.email || '',
+        objet: meta.objet,
+        detail_livrable: meta.detail_livrable || '',
+        date_debut: fmtISOFr(meta.date_debut), date_fin: fmtISOFr(meta.date_fin),
+        total: fmtMontantFr(total) + ' €',
+        sig_j: String(today.getDate()).padStart(2, '0'),
+        sig_m: String(today.getMonth() + 1).padStart(2, '0'),
+        sig_a: String(today.getFullYear()),
+        livrables: valides.map(r => ({ livrable: r.livrable, date_limite: fmtISOFr(r.date_limite), remuneration: fmtMontantFr(r.remuneration) + ' €' })),
+      });
+      const blob = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const nomFichier = `${meta.num_bdc}_Ingenierie_${inter.nom || 'intervenant'}.docx`.replace(/\s+/g, '-');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = nomFichier;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      let archId = null;
+      if (archiver) {
+        try { const arch = await db.docsUploadBlobAdmin(inter.id, 'bdc', blob, nomFichier); archId = arch && arch.id; onArchived && onArchived(); toast('BDC Ingénierie généré et archivé', 'success'); }
+        catch (e) { console.error(e); toast('BDC généré (archivage échoué : ' + (e.message || '') + ')', 'error'); }
+      } else { toast('BDC Ingénierie généré', 'success'); }
+      // Ligne de facturation (BDC émis = facturé), dédoublonnée par n° de BDC
+      try {
+        await db.saveFacturationBDC({
+          num_bdc: meta.num_bdc, intervenant_id: inter.id, promo_id: meta.promo_id || null,
+          libelle: `${meta.num_bdc} — Ingénierie : ${meta.objet}`,
+          periode_debut: meta.date_debut || null, periode_fin: meta.date_fin || null,
+          heures: null, taux: null, montant: total, document_id: archId,
+        });
+        onArchived && onArchived();
+      } catch (e) { console.error(e); toast('Ligne de facturation non créée : ' + (e.message || ''), 'error'); }
+      onClose();
+    } catch (e) {
+      console.error(e);
+      const msg = e.properties && e.properties.errors ? e.properties.errors.map(x => x.message).join(' · ') : (e.message || 'Erreur de génération');
+      toast(msg, 'error');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 900 }}>
+        <div className="modal-head">
+          <h3>🛠 Générer un BDC — Ingénierie pédagogique</h3>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+        {champManquant && (
+          <div className="text-sm" style={{ background: 'var(--cyan-light)', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+            💡 Les coordonnées prestataire sont vides — le BDC se remplira avec le nom de l’intervenant par défaut.
+          </div>
+        )}
+        <div className="flex gap-12" style={{ flexWrap: 'wrap' }}>
+          <div className="field" style={{ flex: '1 1 200px' }}>
+            <div className="label">N° de BDC</div>
+            <input value={meta.num_bdc} onChange={e => setMeta(m => ({ ...m, num_bdc: e.target.value }))} />
+          </div>
+          <div className="field" style={{ flex: '1 1 240px' }}>
+            <div className="label">Promo liée (facturation, optionnel)</div>
+            <select value={meta.promo_id} onChange={e => setMeta(m => ({ ...m, promo_id: e.target.value }))}>
+              <option value="">— aucune —</option>
+              {promos.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="field">
+          <div className="label">Objet de la prestation</div>
+          <input value={meta.objet} placeholder="Conception des supports du Bloc 1 – Mastère…" onChange={e => setMeta(m => ({ ...m, objet: e.target.value }))} />
+        </div>
+        <div className="field">
+          <div className="label">Description / périmètre (optionnel)</div>
+          <textarea rows={2} value={meta.detail_livrable} onChange={e => setMeta(m => ({ ...m, detail_livrable: e.target.value }))} />
+        </div>
+        <div className="flex gap-12">
+          <div className="field" style={{ flex: 1 }}><div className="label">Début de réalisation</div><input type="date" value={meta.date_debut} onChange={e => setMeta(m => ({ ...m, date_debut: e.target.value }))} /></div>
+          <div className="field" style={{ flex: 1 }}><div className="label">Fin de réalisation</div><input type="date" value={meta.date_fin} onChange={e => setMeta(m => ({ ...m, date_fin: e.target.value }))} /></div>
+        </div>
+
+        <div className="label" style={{ marginTop: 8 }}>Livrables</div>
+        <table className="table" style={{ fontSize: 13 }}>
+          <thead><tr><th style={{ textAlign: 'left' }}>Livrable</th><th>Date limite</th><th>Rémunération (€)</th><th></th></tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.key}>
+                <td style={{ textAlign: 'left' }}><input value={r.livrable} placeholder="Support de cours, cas pratique…" style={{ width: '100%' }} onChange={e => setRow(r.key, { livrable: e.target.value })} /></td>
+                <td><input type="date" value={r.date_limite} onChange={e => setRow(r.key, { date_limite: e.target.value })} /></td>
+                <td><input type="number" value={r.remuneration} style={{ width: 90, textAlign: 'right' }} onChange={e => setRow(r.key, { remuneration: e.target.value })} /></td>
+                <td><div className="modal-close" onClick={() => delRow(r.key)} title="Retirer"><Icon name="x" size={14} /></div></td>
+              </tr>
+            ))}
+            <tr style={{ fontWeight: 700, borderTop: '2px solid var(--border)' }}>
+              <td style={{ textAlign: 'right' }} colSpan={2}>TOTAL</td>
+              <td style={{ textAlign: 'right', color: 'var(--navy)' }}>{fmtMontantFr(total)} €</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+        <button className="btn btn-secondary btn-sm" onClick={addRow} style={{ marginTop: 6 }}><Icon name="plus" size={12} /> Ajouter un livrable</button>
+
+        <div className="flex-between" style={{ marginTop: 16, alignItems: 'center' }}>
+          <label className="flex gap-8" style={{ alignItems: 'center', fontSize: 13 }}>
+            <input type="checkbox" checked={archiver} onChange={e => setArchiver(e.target.checked)} /> Archiver dans la fiche
+          </label>
+          <button className="btn btn-primary" disabled={busy} onClick={generer}>
+            {busy ? 'Génération…' : '⬇ Générer le BDC (.docx)'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ---- LISTE INTERVENANTS ----
 const PageIntervenants = ({ data, onSelect, onReload }) => {
   const toast = useToast();
@@ -921,6 +1078,8 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const [showGenBDC, setShowGenBDC] = useState(false);
   // État de la modale de génération de contrat
   const [showGenContrat, setShowGenContrat] = useState(false);
+  // État de la modale de génération de BDC Ingénierie
+  const [showGenIngenierie, setShowGenIngenierie] = useState(false);
 
   const load = async () => {
     const i = await db.getIntervenant(intervenantId);
@@ -1417,6 +1576,9 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
                     <button className="btn btn-secondary btn-sm" onClick={() => setShowGenContrat(true)}>
                       <Icon name="download" size={12} /> Générer un contrat
                     </button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setShowGenIngenierie(true)}>
+                      <Icon name="download" size={12} /> BDC Ingénierie
+                    </button>
                     <button className="btn btn-primary btn-sm" onClick={() => setShowGenBDC(true)}>
                       <Icon name="download" size={12} /> Générer un BDC
                     </button>
@@ -1631,6 +1793,14 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
           modules={modules}
           categories={categories}
           onClose={() => setShowGenContrat(false)}
+          onArchived={load}
+        />
+      )}
+      {showGenIngenierie && (
+        <ModalGenererBDCIngenierie
+          inter={inter}
+          promos={promos}
+          onClose={() => setShowGenIngenierie(false)}
           onArchived={load}
         />
       )}

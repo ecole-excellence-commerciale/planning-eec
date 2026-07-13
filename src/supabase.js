@@ -192,6 +192,31 @@ window.db = {
     return data;
   },
 
+  // ---- Étudiants ----
+  async getEtudiants() {
+    const { data, error } = await _client.from('etudiants').select('*').order('nom');
+    if (error) throw error;
+    return data;
+  },
+  async addEtudiant(e) {
+    const { data, error } = await _client.from('etudiants').insert(e).select('*').single();
+    if (error) throw error;
+    return data;
+  },
+  async updateEtudiant(id, patch) {
+    const { error } = await _client.from('etudiants').update(patch).eq('id', id);
+    if (error) throw error;
+  },
+  async deleteEtudiant(id) {
+    const { error } = await _client.from('etudiants').delete().eq('id', id);
+    if (error) throw error;
+  },
+  // Affectation en masse à une promo
+  async affecterEtudiantsPromo(ids, promoId) {
+    const { error } = await _client.from('etudiants').update({ promo_id: promoId }).in('id', ids);
+    if (error) throw error;
+  },
+
   // ---- Budget / Suivi facturation ----
   async getParametre(cle) {
     const { data, error } = await _client.from('parametres').select('valeur').eq('cle', cle).maybeSingle();

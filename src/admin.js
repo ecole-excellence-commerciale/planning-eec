@@ -54,6 +54,7 @@ const Sidebar = ({ current, onNav, onLogout }) => {
       { id: 'dashboard', label: 'Tableau de bord', icon: 'dashboard' },
       { id: 'calendrier', label: 'Vue calendrier', icon: 'calendar' },
       { id: 'planning', label: 'Planning', icon: 'layout' },
+      { id: 'etudiants', label: 'Étudiants', icon: 'users' },
       { id: 'budget', label: 'Budget', icon: 'dashboard' },
     ]},
     { title: 'Gestion', items: [

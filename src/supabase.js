@@ -293,7 +293,7 @@ window.db = {
   // (1 ligne = une demi-journée). La date sert à ventiler par mois.
   async getPlanningEngagement() {
     const { data, error } = await _client.from('promo_planning')
-      .select('intervenant_id, promo_id, date_jour, periode').not('intervenant_id', 'is', null);
+      .select('intervenant_id, promo_id, date_jour, periode, statut_validation').not('intervenant_id', 'is', null);
     if (error) throw error;
     return data;
   },

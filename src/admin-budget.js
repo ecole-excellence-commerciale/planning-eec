@@ -24,6 +24,21 @@ const moisLabel = (k) => {
 };
 const SANS_PROMO = '__sans__';
 
+// Statuts de créneau : réutilisés depuis admin-planning.js (chargé avant ce fichier).
+// Repli défensif si l'ordre de chargement changeait un jour.
+const _ORDRE_STATUT = (typeof STATUT_ORDRE !== 'undefined') ? STATUT_ORDRE : ['provisoire', 'cale', 'confirme'];
+const _META_STATUT = (typeof STATUT_META !== 'undefined') ? STATUT_META : {
+  provisoire: { label: 'Provisoire', icon: '', color: '#94a3b8' },
+  cale: { label: 'Calé', icon: '📌', color: '#ea580c' },
+  confirme: { label: 'Confirmé', icon: '🔒', color: '#16a34a' },
+};
+// Niveaux de projection : on garde les créneaux dont le verrouillage est >= au seuil choisi
+const FILTRES_PROJECTION = [
+  { id: 'tous', label: 'Tout le planning', desc: 'provisoire, calé et confirmé' },
+  { id: 'cale', label: '📌 Calé et +', desc: 'créneaux calés ou confirmés' },
+  { id: 'confirme', label: '🔒 Confirmé', desc: 'uniquement les créneaux confirmés' },
+];
+
 // Cellule éditable : état local, enregistrement à la sortie du champ (ou Entrée)
 const EditCell = ({ value, onCommit, type = 'text', width = 92, align = 'right', placeholder }) => {
   const [v, setV] = useState(value == null ? '' : value);
@@ -52,6 +67,7 @@ const PageBudget = ({ data }) => {
   const [loading, setLoading] = useState(true);
   const [onglet, setOnglet] = useState('synthese');
   const [promoFocus, setPromoFocus] = useState('all');
+  const [filtreProjection, setFiltreProjection] = useState('tous');
   const [ongletFact, setOngletFact] = useState('tous');
 
   const tauxById = useMemo(() => Object.fromEntries(intervenants.map(i => [i.id, Number(i.taux_horaire) || 0])), [intervenants]);
@@ -94,7 +110,12 @@ const PageBudget = ({ data }) => {
       (grp[k] = grp[k] || []).push(r);
     });
 
-    // 3) Consommation chronologique : les heures BDC éteignent les créneaux les plus anciens
+    // 3) Consommation chronologique : les heures BDC éteignent les créneaux les plus anciens.
+    //    Important : le BDC s'impute sur TOUS les créneaux (ils ont eu lieu quel que soit leur
+    //    statut) ; c'est seulement le RESTE non couvert qui est filtré par niveau de validation.
+    const seuilIdx = Math.max(0, _ORDRE_STATUT.indexOf(filtreProjection));
+    const passeFiltre = (r) => _ORDRE_STATUT.indexOf((r && r.statut_validation) || 'provisoire') >= seuilIdx;
+    let nbRetenus = 0, nbNonCouverts = 0;
     const prevCell = {};   // promo||mois -> €
     const prevHCell = {};  // promo||mois -> heures
     Object.keys(grp).forEach(k => {
@@ -110,7 +131,10 @@ const PageBudget = ({ data }) => {
       rows.forEach(r => {
         let h = HEURES_DEMI;
         if (couvert > 0) { const use = Math.min(couvert, h); couvert -= use; h -= use; }
-        if (h <= 0.001) return;
+        if (h <= 0.001) return;              // déjà couvert par un BDC
+        nbNonCouverts++;
+        if (!passeFiltre(r)) return;         // écarté par le filtre de projection
+        nbRetenus++;
         const mois = String(r.date_jour || '').slice(0, 7) || 'n/c';
         const key = promoId + '||' + mois;
         prevCell[key] = (prevCell[key] || 0) + h * taux;
@@ -157,8 +181,8 @@ const PageBudget = ({ data }) => {
       };
     }).sort((a, b) => b.budget - a.budget || b.engage - a.engage);
 
-    return { prevCell, prevHCell, factCell, budgetPromo, mois, parPromo };
-  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI]);
+    return { prevCell, prevHCell, factCell, budgetPromo, mois, parPromo, nbRetenus, nbNonCouverts };
+  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI, filtreProjection]);
 
   // Vue mensuelle (toutes promos ou une seule), avec cumul et reste
   const parMois = useMemo(() => {
@@ -252,6 +276,7 @@ const PageBudget = ({ data }) => {
     const sep = ';', esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
     const L = [];
     L.push(esc('SUIVI BUDGET — export du ' + new Date().toLocaleDateString('fr-FR')));
+    L.push([esc('Projection du prévisionnel'), esc((FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label + ' — ' + moteur.nbRetenus + ' créneau(x) retenu(s)')].join(sep));
     L.push('');
     [['Budget disponible', budgetTotal], ['Engagé', engage], ['Facturé', facture], ['Prévisionnel', previsionnel], ['Payé', paye], ['Reste', reste]]
       .forEach(([k, v]) => L.push([esc(k), _n2(v)].join(sep)));
@@ -291,7 +316,13 @@ const PageBudget = ({ data }) => {
           <h1 className="page-title display-dot">Budget &amp; facturation</h1>
           <div className="page-subtitle">Suivi des dépenses d’intervention par promo et par mois.</div>
         </div>
-        <div className="flex gap-8" style={{ alignItems: 'flex-end' }}>
+        <div className="flex gap-8" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
+            <div className="label" style={{ fontSize: 10 }}>Projection du prévisionnel</div>
+            <select value={filtreProjection} onChange={e => setFiltreProjection(e.target.value)}>
+              {FILTRES_PROJECTION.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+            </select>
+          </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <div className="label" style={{ fontSize: 10 }}>Seuil alerte (%)</div>
             <input type="number" value={seuil} style={{ width: 70 }} onChange={e => majSeuil(parseInt(e.target.value) || 0)} />
@@ -307,6 +338,16 @@ const PageBudget = ({ data }) => {
         <Onglet id="enveloppes" label="Enveloppes" />
         <Onglet id="facturation" label="Facturation" />
       </div>
+
+      {filtreProjection !== 'tous' && (
+        <div className="card" style={{ borderLeft: '4px solid #2563eb', background: '#f5f9ff', padding: '8px 12px' }}>
+          <div className="text-sm">
+            🔎 <strong>Projection restreinte :</strong> {(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).desc}.
+            Le prévisionnel ne compte que <strong>{moteur.nbRetenus}</strong> créneau(x) sur {moteur.nbNonCouverts} restant à facturer.
+            Le facturé n’est pas affecté.
+          </div>
+        </div>
+      )}
 
       {/* ---------------- SYNTHÈSE ---------------- */}
       {onglet === 'synthese' && (
@@ -389,6 +430,8 @@ const PageBudget = ({ data }) => {
           </div>
           <div className="help" style={{ marginBottom: 10 }}>
             Budget de référence : <strong>{_eur0(parMois.budget)}</strong>. « Reste » = budget moins le cumul engagé à la fin du mois.
+            Prévisionnel basé sur : <strong>{(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label}</strong>
+            {' '}({moteur.nbRetenus} créneau(x) retenu(s)) — modifiable en haut de page.
           </div>
           {parMois.lignes.length === 0 ? <div className="text-muted text-sm">Aucun engagement daté pour cette sélection.</div> : (
             <table className="table" style={{ fontSize: 13 }}>

@@ -68,6 +68,9 @@ const PageBudget = ({ data }) => {
   const [onglet, setOnglet] = useState('synthese');
   const [promoFocus, setPromoFocus] = useState('all');
   const [filtreProjection, setFiltreProjection] = useState('tous');
+  const [inclureHistorique, setInclureHistorique] = useState(false);
+  const [moisDebut, setMoisDebut] = useState('');
+  const [moisFin, setMoisFin] = useState('');
   const [ongletFact, setOngletFact] = useState('tous');
 
   const tauxById = useMemo(() => Object.fromEntries(intervenants.map(i => [i.id, Number(i.taux_horaire) || 0])), [intervenants]);
@@ -91,7 +94,17 @@ const PageBudget = ({ data }) => {
   // MOTEUR : ventilation par promo × mois
   // ============================================================
   const moteur = useMemo(() => {
-    const factActives = facturations.filter(f => f.statut === 'facture' || f.statut === 'paye');
+    // Bornes de période (mois inclus). Vide = illimité.
+    const dansPeriode = (m) => {
+      if (!moisDebut && !moisFin) return true;
+      if (!m || m === 'n/c') return false;      // non daté : hors d'une période bornée
+      if (moisDebut && m < moisDebut) return false;
+      if (moisFin && m > moisFin) return false;
+      return true;
+    };
+    // Historique « avant reprise » (lignes Ypareo importées) : exclu par défaut du pilotage.
+    const retenirLigne = (f) => inclureHistorique || !f.avant_coupure;
+    const factActives = facturations.filter(f => (f.statut === 'facture' || f.statut === 'paye') && retenirLigne(f));
 
     // 1) Heures déjà couvertes par un BDC, par (promo, intervenant)
     const bdcH = {};
@@ -132,10 +145,11 @@ const PageBudget = ({ data }) => {
         let h = HEURES_DEMI;
         if (couvert > 0) { const use = Math.min(couvert, h); couvert -= use; h -= use; }
         if (h <= 0.001) return;              // déjà couvert par un BDC
+        const mois = String(r.date_jour || '').slice(0, 7) || 'n/c';
+        if (!dansPeriode(mois)) return;      // hors de la période sélectionnée
         nbNonCouverts++;
         if (!passeFiltre(r)) return;         // écarté par le filtre de projection
         nbRetenus++;
-        const mois = String(r.date_jour || '').slice(0, 7) || 'n/c';
         const key = promoId + '||' + mois;
         prevCell[key] = (prevCell[key] || 0) + h * taux;
         prevHCell[key] = (prevHCell[key] || 0) + h;
@@ -158,11 +172,17 @@ const PageBudget = ({ data }) => {
       budgetPromo[key] = (budgetPromo[key] || 0) + (Number(b.montant) || 0);
     });
 
-    // 6) Liste des mois rencontrés
+    // 6) Liste des mois. moisTous vient des données BRUTES (sinon les options de période
+    //    se réduiraient dès qu'un filtre est posé) ; mois = ceux retenus pour les agrégats.
     const moisSet = new Set();
-    Object.keys(prevCell).forEach(k => moisSet.add(k.split('||')[1]));
-    Object.keys(factCell).forEach(k => moisSet.add(k.split('||')[1]));
-    const mois = Array.from(moisSet).filter(Boolean).sort();
+    planningEng.forEach(r => { const m = String(r.date_jour || '').slice(0, 7); if (m) moisSet.add(m); });
+    facturations.forEach(f => {
+      if (!retenirLigne(f)) return;
+      const m = String(f.mois_imputation || f.periode_debut || '').slice(0, 7);
+      moisSet.add(m || 'n/c');
+    });
+    const moisTous = Array.from(moisSet).filter(Boolean).sort();
+    const mois = moisTous.filter(dansPeriode);
 
     // 7) Liste des promos concernées
     const promoSet = new Set([...Object.keys(budgetPromo)]);
@@ -181,8 +201,8 @@ const PageBudget = ({ data }) => {
       };
     }).sort((a, b) => b.budget - a.budget || b.engage - a.engage);
 
-    return { prevCell, prevHCell, factCell, budgetPromo, mois, parPromo, nbRetenus, nbNonCouverts };
-  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI, filtreProjection]);
+    return { prevCell, prevHCell, factCell, budgetPromo, mois, moisTous, parPromo, nbRetenus, nbNonCouverts };
+  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI, filtreProjection, inclureHistorique, moisDebut, moisFin]);
 
   // Vue mensuelle (toutes promos ou une seule), avec cumul et reste
   const parMois = useMemo(() => {
@@ -211,7 +231,17 @@ const PageBudget = ({ data }) => {
   const budgetTotal = useMemo(() => budgets.filter(b => b.actif).reduce((s, b) => s + (Number(b.montant) || 0), 0), [budgets]);
   const facture = useMemo(() => moteur.parPromo.reduce((s, r) => s + r.facture, 0), [moteur]);
   const previsionnel = useMemo(() => moteur.parPromo.reduce((s, r) => s + r.prev, 0), [moteur]);
-  const paye = useMemo(() => facturations.filter(f => f.statut === 'paye').reduce((s, f) => s + (Number(f.montant) || 0), 0), [facturations]);
+  const paye = useMemo(() => facturations.filter(f => {
+    if (f.statut !== 'paye') return false;
+    if (!inclureHistorique && f.avant_coupure) return false;
+    if (moisDebut || moisFin) {
+      const m = String(f.mois_imputation || f.periode_debut || '').slice(0, 7);
+      if (!m) return false;
+      if (moisDebut && m < moisDebut) return false;
+      if (moisFin && m > moisFin) return false;
+    }
+    return true;
+  }).reduce((s, f) => s + (Number(f.montant) || 0), 0), [facturations, inclureHistorique, moisDebut, moisFin]);
   const engage = facture + previsionnel;
   const reste = budgetTotal - engage;
   const pct = budgetTotal > 0 ? Math.round((engage / budgetTotal) * 100) : 0;
@@ -277,6 +307,8 @@ const PageBudget = ({ data }) => {
     const L = [];
     L.push(esc('SUIVI BUDGET — export du ' + new Date().toLocaleDateString('fr-FR')));
     L.push([esc('Projection du prévisionnel'), esc((FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label + ' — ' + moteur.nbRetenus + ' créneau(x) retenu(s)')].join(sep));
+    L.push([esc('Période'), esc((moisDebut ? moisLabel(moisDebut) : 'début') + ' → ' + (moisFin ? moisLabel(moisFin) : 'fin'))].join(sep));
+    L.push([esc('Historique avant reprise'), esc(inclureHistorique ? 'inclus' : 'exclu')].join(sep));
     L.push('');
     [['Budget disponible', budgetTotal], ['Engagé', engage], ['Facturé', facture], ['Prévisionnel', previsionnel], ['Payé', paye], ['Reste', reste]]
       .forEach(([k, v]) => L.push([esc(k), _n2(v)].join(sep)));
@@ -317,12 +349,6 @@ const PageBudget = ({ data }) => {
           <div className="page-subtitle">Suivi des dépenses d’intervention par promo et par mois.</div>
         </div>
         <div className="flex gap-8" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
-            <div className="label" style={{ fontSize: 10 }}>Projection du prévisionnel</div>
-            <select value={filtreProjection} onChange={e => setFiltreProjection(e.target.value)}>
-              {FILTRES_PROJECTION.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-            </select>
-          </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <div className="label" style={{ fontSize: 10 }}>Seuil alerte (%)</div>
             <input type="number" value={seuil} style={{ width: 70 }} onChange={e => majSeuil(parseInt(e.target.value) || 0)} />
@@ -339,13 +365,49 @@ const PageBudget = ({ data }) => {
         <Onglet id="facturation" label="Facturation" />
       </div>
 
-      {filtreProjection !== 'tous' && (
-        <div className="card" style={{ borderLeft: '4px solid #2563eb', background: '#f5f9ff', padding: '8px 12px' }}>
-          <div className="text-sm">
-            🔎 <strong>Projection restreinte :</strong> {(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).desc}.
-            Le prévisionnel ne compte que <strong>{moteur.nbRetenus}</strong> créneau(x) sur {moteur.nbNonCouverts} restant à facturer.
-            Le facturé n’est pas affecté.
+      {['synthese', 'promo', 'mois'].indexOf(onglet) >= 0 && (
+        <div className="card" style={{ paddingTop: 10, paddingBottom: 10 }}>
+          <div className="flex gap-12" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div className="field" style={{ marginBottom: 0, minWidth: 170 }}>
+              <div className="label" style={{ fontSize: 10 }}>Projection du prévisionnel</div>
+              <select value={filtreProjection} onChange={e => setFiltreProjection(e.target.value)}>
+                {FILTRES_PROJECTION.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <div className="label" style={{ fontSize: 10 }}>Période — du</div>
+              <select value={moisDebut} onChange={e => setMoisDebut(e.target.value)} style={{ minWidth: 130 }}>
+                <option value="">Depuis le début</option>
+                {moteur.moisTous.filter(m => m !== 'n/c').map(m => <option key={m} value={m}>{moisLabel(m)}</option>)}
+              </select>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <div className="label" style={{ fontSize: 10 }}>au</div>
+              <select value={moisFin} onChange={e => setMoisFin(e.target.value)} style={{ minWidth: 130 }}>
+                <option value="">Jusqu’à la fin</option>
+                {moteur.moisTous.filter(m => m !== 'n/c').map(m => <option key={m} value={m}>{moisLabel(m)}</option>)}
+              </select>
+            </div>
+            <label className="flex gap-8" style={{ alignItems: 'center', fontSize: 12, paddingBottom: 6, cursor: 'pointer' }}>
+              <input type="checkbox" checked={inclureHistorique} onChange={e => setInclureHistorique(e.target.checked)} />
+              Inclure l’historique avant reprise
+            </label>
+            {(filtreProjection !== 'tous' || moisDebut || moisFin || inclureHistorique) && (
+              <button className="btn btn-secondary btn-sm" style={{ marginBottom: 2 }}
+                onClick={() => { setFiltreProjection('tous'); setMoisDebut(''); setMoisFin(''); setInclureHistorique(false); }}>
+                Réinitialiser
+              </button>
+            )}
           </div>
+
+          {(filtreProjection !== 'tous' || moisDebut || moisFin || inclureHistorique) && (
+            <div className="text-sm" style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+              🔎 {moisDebut || moisFin ? <span>Période : <strong>{moisDebut ? moisLabel(moisDebut) : 'début'} → {moisFin ? moisLabel(moisFin) : 'fin'}</strong>. </span> : null}
+              {filtreProjection !== 'tous' ? <span>Prévisionnel limité aux créneaux <strong>{(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).desc}</strong> ({moteur.nbRetenus} sur {moteur.nbNonCouverts} restant à facturer). </span> : null}
+              {inclureHistorique ? <span>Historique Ypareo <strong>inclus</strong>. </span> : <span>Historique avant reprise <strong>exclu</strong>. </span>}
+              {(moisDebut || moisFin) ? <span style={{ color: '#ea580c' }}>⚠ Le budget affiché reste l’enveloppe complète : le « reste » est donc optimiste sur une période partielle.</span> : null}
+            </div>
+          )}
         </div>
       )}
 
@@ -429,9 +491,9 @@ const PageBudget = ({ data }) => {
             </div>
           </div>
           <div className="help" style={{ marginBottom: 10 }}>
-            Budget de référence : <strong>{_eur0(parMois.budget)}</strong>. « Reste » = budget moins le cumul engagé à la fin du mois.
-            Prévisionnel basé sur : <strong>{(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label}</strong>
-            {' '}({moteur.nbRetenus} créneau(x) retenu(s)) — modifiable en haut de page.
+            Budget de référence : <strong>{_eur0(parMois.budget)}</strong> (enveloppe complète de la sélection).
+            « Reste » = budget moins le cumul engagé à la fin du mois. Prévisionnel basé sur{' '}
+            <strong>{(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label}</strong> — filtres ci-dessus.
           </div>
           {parMois.lignes.length === 0 ? <div className="text-muted text-sm">Aucun engagement daté pour cette sélection.</div> : (
             <table className="table" style={{ fontSize: 13 }}>

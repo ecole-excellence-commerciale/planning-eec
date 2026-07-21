@@ -289,10 +289,25 @@ window.db = {
     if (error) throw error;
     return data.id;
   },
-  // Engagement prévisionnel : tous les créneaux planifiés avec un intervenant (1 ligne = une demi-journée)
+  // Engagement prévisionnel : tous les créneaux planifiés avec un intervenant
+  // (1 ligne = une demi-journée). La date sert à ventiler par mois.
   async getPlanningEngagement() {
     const { data, error } = await _client.from('promo_planning')
-      .select('intervenant_id, promo_id').not('intervenant_id', 'is', null);
+      .select('intervenant_id, promo_id, date_jour, periode').not('intervenant_id', 'is', null);
+    if (error) throw error;
+    return data;
+  },
+  async addBudget(b) {
+    const { data, error } = await _client.from('budgets').insert(b).select('*').single();
+    if (error) throw error;
+    return data;
+  },
+  async deleteBudget(id) {
+    const { error } = await _client.from('budgets').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async addFacturation(f) {
+    const { data, error } = await _client.from('facturations').insert(f).select('*').single();
     if (error) throw error;
     return data;
   },

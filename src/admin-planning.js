@@ -406,7 +406,7 @@ const PagePlanning = ({ data, onReload }) => {
       // Calculer le lundi de la semaine de p.date_jour (heure locale)
       const d = new Date(p.date_jour + 'T00:00:00');
       const dow = d.getDay() === 0 ? 7 : d.getDay();
-      const lundi = new Date(d.getTime() - (dow - 1) * 86400000);
+      const lundi = addJours(d, -(dow - 1));
       map[p.semaine_num] = isoDate(lundi);
     }
     return map;
@@ -752,7 +752,7 @@ const PagePlanning = ({ data, onReload }) => {
             const res = resumeSemaine(num);
             const lundi = lundiBySemaine[num];
             const lundiD = lundi ? new Date(lundi + 'T00:00:00') : null;
-            const venD = lundiD ? new Date(lundiD.getTime() + 4 * 86400000) : null;
+            const venD = lundiD ? addJours(lundiD, 4) : null;
             const isOpen = openSemaines[num];
             return (
               <div key={num} className="card" style={{ marginBottom: 8, padding: 0, overflow: 'hidden' }}>
@@ -801,7 +801,7 @@ const PagePlanning = ({ data, onReload }) => {
                         <tr>
                           <th style={{ width: 90, textAlign: 'left', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, padding: '4px 8px' }}>CRÉNEAU</th>
                           {PLANNING_JOURS_LABELS.map((j, i) => {
-                            const dateJour = lundiD ? new Date(lundiD.getTime() + i * 86400000) : null;
+                            const dateJour = lundiD ? addJours(lundiD, i) : null;
                             return (
                               <th key={j} style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, padding: '4px 8px', textAlign: 'left' }}>
                                 <div>{j.toUpperCase()}</div>
@@ -822,7 +822,7 @@ const PagePlanning = ({ data, onReload }) => {
                               {periode === 'am' ? 'MATIN' : 'APRÈS-MIDI'}
                             </td>
                             {[0, 1, 2, 3, 4].map(jourIdx => {
-                              const dateJour = lundiD ? isoDate(new Date(lundiD.getTime() + jourIdx * 86400000)) : null;
+                              const dateJour = lundiD ? isoDate(addJours(lundiD, jourIdx)) : null;
                               const entry = dateJour ? findPlanningEntry(num, dateJour, periode) : null;
                               const info = entry ? moduleInfo(entry.module_id) : null;
                               const cellKey = `${num}-${jourIdx}-${periode}`;

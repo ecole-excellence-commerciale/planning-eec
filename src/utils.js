@@ -30,6 +30,16 @@ function isoDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+// Ajoute (ou retire) n jours CALENDAIRES à une date, en heure locale.
+// ⚠ Ne JAMAIS faire `date.getTime() + n*86400000` : aux changements d'heure
+// (DST, ex. 26/10/2026), un jour civil ≠ 24 h, ce qui décale les dates d'un cran
+// et casse le matching disponibilités ↔ créneaux sur nov-déc.
+function addJours(dateOrIso, n) {
+  const d = (dateOrIso instanceof Date) ? new Date(dateOrIso) : new Date(dateOrIso + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d;
+}
+
 // Génère les semaines (lundi→vendredi) entre deux dates ISO (incluses)
 function generateWeeks(dateDebut, dateFin) {
   const start = new Date(dateDebut + 'T00:00:00');

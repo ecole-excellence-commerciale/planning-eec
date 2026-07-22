@@ -550,7 +550,7 @@ window.db = {
   async addPromo({ niveauId, programmeTypeId, label, dateDebut, semaines }) {
     const sortedSemaines = [...semaines].sort();
     const dateFin = sortedSemaines.length > 0
-      ? isoDate(new Date(new Date(sortedSemaines[sortedSemaines.length - 1] + 'T00:00:00').getTime() + 4 * 86400000))
+      ? isoDate(addJours(sortedSemaines[sortedSemaines.length - 1], 4))
       : dateDebut;
 
     // Créer la promo
@@ -623,7 +623,7 @@ window.db = {
     const lundiOf = (dateJourISO) => {
       const d = new Date(dateJourISO + 'T00:00:00');
       const dow = d.getDay() === 0 ? 7 : d.getDay();
-      return isoDate(new Date(d.getTime() - (dow - 1) * 86400000));
+      return isoDate(addJours(d, -(dow - 1)));
     };
     const entriesByLundi = {};
     for (const e of (existing || [])) {
@@ -889,7 +889,7 @@ window.db = {
         // décalages de fuseau horaire)
         const d = new Date(p.date_jour + 'T00:00:00');
         const dow = d.getDay() === 0 ? 7 : d.getDay();
-        const lundi = new Date(d.getTime() - (dow - 1) * 86400000);
+        const lundi = addJours(d, -(dow - 1));
         map[p.semaine_num] = isoDate(lundi);
       }
     }

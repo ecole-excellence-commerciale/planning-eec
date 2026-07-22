@@ -292,10 +292,22 @@ window.db = {
   // Engagement prévisionnel : tous les créneaux planifiés avec un intervenant
   // (1 ligne = une demi-journée). La date sert à ventiler par mois.
   async getPlanningEngagement() {
-    const { data, error } = await _client.from('promo_planning')
-      .select('intervenant_id, promo_id, date_jour, periode, statut_validation').not('intervenant_id', 'is', null);
-    if (error) throw error;
-    return data;
+    // Toutes promos confondues -> peut dépasser la limite PostgREST de 1000 lignes.
+    // On pagine pour ne pas sous-estimer le prévisionnel budgétaire.
+    const PAGE = 1000;
+    let from = 0, out = [];
+    for (;;) {
+      const { data, error } = await _client.from('promo_planning')
+        .select('intervenant_id, promo_id, date_jour, periode, statut_validation')
+        .not('intervenant_id', 'is', null)
+        .order('date_jour', { ascending: true }).order('periode', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw error;
+      out = out.concat(data);
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
+    }
+    return out;
   },
   async addBudget(b) {
     const { data, error } = await _client.from('budgets').insert(b).select('*').single();
@@ -1052,10 +1064,22 @@ window.db = {
   // DISPONIBILITÉS (admin — vue complète)
   // ----------------------------------------------------------
   async getDisposCampagne(campagneId) {
-    const { data, error } = await _client
-      .from('disponibilites').select('*').eq('campagne_id', campagneId);
-    if (error) throw error;
-    return data;
+    // ⚠ PostgREST plafonne à 1000 lignes par requête. Avec >1000 dispos, les
+    // intervenants ayant rempli en dernier passaient sous le radar (invisibles au
+    // planning alors que présents en base). On pagine pour tout récupérer.
+    const PAGE = 1000;
+    let from = 0, out = [];
+    for (;;) {
+      const { data, error } = await _client
+        .from('disponibilites').select('*').eq('campagne_id', campagneId)
+        .order('date', { ascending: true }).order('periode', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw error;
+      out = out.concat(data);
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
+    }
+    return out;
   },
 
   async getDisposIntervenant(intervenantId, campagneId) {

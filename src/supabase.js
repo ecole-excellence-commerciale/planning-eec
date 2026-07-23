@@ -544,6 +544,14 @@ window.db = {
     return data;
   },
 
+  // Frontière budgétaire : le planning n'alimente le prévisionnel qu'à partir de cette date.
+  // Avant, l'engagement est porté par les lignes de facturation reprises (Ypareo).
+  async updatePromoReprise(promoId, dateISO) {
+    const { error } = await _client.from('promos')
+      .update({ date_reprise_budget: dateISO || null }).eq('id', promoId);
+    if (error) throw error;
+  },
+
   async getPromo(id) {
     const { data, error } = await _client
       .from('promos').select('*').eq('id', id).single();

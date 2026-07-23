@@ -69,6 +69,11 @@ const PageBudget = ({ data }) => {
   const [promoFocus, setPromoFocus] = useState('all');
   const [filtreProjection, setFiltreProjection] = useState('tous');
   const [inclureHistorique, setInclureHistorique] = useState(false);
+  // Frontière Ypareo/app par promo : le planning ne compte qu'à partir de cette date.
+  const [reprises, setReprises] = useState({});
+  useEffect(() => {
+    setReprises(Object.fromEntries(promos.map(p => [p.id, p.date_reprise_budget || ''])));
+  }, [promos]);
   const [moisDebut, setMoisDebut] = useState('');
   const [moisFin, setMoisFin] = useState('');
   const [ongletFact, setOngletFact] = useState('tous');
@@ -103,7 +108,10 @@ const PageBudget = ({ data }) => {
       return true;
     };
     // Historique « avant reprise » (lignes Ypareo importées) : exclu par défaut du pilotage.
-    const retenirLigne = (f) => inclureHistorique || !f.avant_coupure;
+    // Historique « avant reprise » : une fois qu'une ligne est RATTACHÉE à une promo,
+    // elle est qualifiée et compte toujours. Le bouton ne masque donc que l'historique
+    // non rattachable (les BDC transversaux « * », qui ne visent aucune promo précise).
+    const retenirLigne = (f) => inclureHistorique || !f.avant_coupure || !!f.promo_id;
     const factActives = facturations.filter(f => (f.statut === 'facture' || f.statut === 'paye') && retenirLigne(f));
 
     // 1) Heures déjà couvertes par un BDC, par (promo, intervenant)
@@ -119,6 +127,10 @@ const PageBudget = ({ data }) => {
     const grp = {};
     planningEng.forEach(r => {
       if (!r.intervenant_id) return;
+      // Avant la date de reprise de la promo, l'engagement est déjà porté par les
+      // lignes reprises de Ypareo : on ignore ces créneaux pour ne pas doubler.
+      const rep = r.promo_id ? reprises[r.promo_id] : null;
+      if (rep && String(r.date_jour || '') < rep) return;
       const k = (r.promo_id || SANS_PROMO) + '||' + r.intervenant_id;
       (grp[k] = grp[k] || []).push(r);
     });
@@ -202,7 +214,7 @@ const PageBudget = ({ data }) => {
     }).sort((a, b) => b.budget - a.budget || b.engage - a.engage);
 
     return { prevCell, prevHCell, factCell, budgetPromo, mois, moisTous, parPromo, nbRetenus, nbNonCouverts };
-  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI, filtreProjection, inclureHistorique, moisDebut, moisFin]);
+  }, [budgets, facturations, planningEng, tauxById, promoById, HEURES_DEMI, filtreProjection, inclureHistorique, moisDebut, moisFin, reprises]);
 
   // Vue mensuelle (toutes promos ou une seule), avec cumul et reste
   const parMois = useMemo(() => {
@@ -233,7 +245,7 @@ const PageBudget = ({ data }) => {
   const previsionnel = useMemo(() => moteur.parPromo.reduce((s, r) => s + r.prev, 0), [moteur]);
   const paye = useMemo(() => facturations.filter(f => {
     if (f.statut !== 'paye') return false;
-    if (!inclureHistorique && f.avant_coupure) return false;
+    if (!inclureHistorique && f.avant_coupure && !f.promo_id) return false;
     if (moisDebut || moisFin) {
       const m = String(f.mois_imputation || f.periode_debut || '').slice(0, 7);
       if (!m) return false;
@@ -297,6 +309,13 @@ const PageBudget = ({ data }) => {
     try { await db.deleteFacturation(f.id); setFacturations(fs => fs.filter(x => x.id !== f.id)); toast('Supprimée', 'success'); }
     catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
   };
+  const majReprise = async (promoId, val) => {
+    const v = val || null;
+    setReprises(r => ({ ...r, [promoId]: v || '' }));
+    try { await db.updatePromoReprise(promoId, v); toast('Frontière enregistrée', 'success'); }
+    catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
+  };
+
   const majSeuil = async (v) => {
     setSeuil(v);
     try { await db.setParametre('seuil_alerte', String(v)); } catch (e) { console.error(e); toast('Erreur', 'error'); }
@@ -308,7 +327,7 @@ const PageBudget = ({ data }) => {
     L.push(esc('SUIVI BUDGET — export du ' + new Date().toLocaleDateString('fr-FR')));
     L.push([esc('Projection du prévisionnel'), esc((FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).label + ' — ' + moteur.nbRetenus + ' créneau(x) retenu(s)')].join(sep));
     L.push([esc('Période'), esc((moisDebut ? moisLabel(moisDebut) : 'début') + ' → ' + (moisFin ? moisLabel(moisFin) : 'fin'))].join(sep));
-    L.push([esc('Historique avant reprise'), esc(inclureHistorique ? 'inclus' : 'exclu')].join(sep));
+    L.push([esc('Historique non rattaché'), esc(inclureHistorique ? 'inclus' : 'exclu')].join(sep));
     L.push('');
     [['Budget disponible', budgetTotal], ['Engagé', engage], ['Facturé', facture], ['Prévisionnel', previsionnel], ['Payé', paye], ['Reste', reste]]
       .forEach(([k, v]) => L.push([esc(k), _n2(v)].join(sep)));
@@ -390,7 +409,9 @@ const PageBudget = ({ data }) => {
             </div>
             <label className="flex gap-8" style={{ alignItems: 'center', fontSize: 12, paddingBottom: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={inclureHistorique} onChange={e => setInclureHistorique(e.target.checked)} />
-              Inclure l’historique avant reprise
+              <span title="L’historique déjà rattaché à une promo compte toujours. Ce bouton ne concerne que les lignes avant reprise sans promo (BDC transversaux).">
+                Inclure l’historique <strong>non rattaché</strong>
+              </span>
             </label>
             {(filtreProjection !== 'tous' || moisDebut || moisFin || inclureHistorique) && (
               <button className="btn btn-secondary btn-sm" style={{ marginBottom: 2 }}
@@ -404,7 +425,7 @@ const PageBudget = ({ data }) => {
             <div className="text-sm" style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)', color: 'var(--text-muted)' }}>
               🔎 {moisDebut || moisFin ? <span>Période : <strong>{moisDebut ? moisLabel(moisDebut) : 'début'} → {moisFin ? moisLabel(moisFin) : 'fin'}</strong>. </span> : null}
               {filtreProjection !== 'tous' ? <span>Prévisionnel limité aux créneaux <strong>{(FILTRES_PROJECTION.find(f => f.id === filtreProjection) || {}).desc}</strong> ({moteur.nbRetenus} sur {moteur.nbNonCouverts} restant à facturer). </span> : null}
-              {inclureHistorique ? <span>Historique Ypareo <strong>inclus</strong>. </span> : <span>Historique avant reprise <strong>exclu</strong>. </span>}
+              {inclureHistorique ? <span>Historique non rattaché <strong>inclus</strong>. </span> : <span>Historique non rattaché <strong>exclu</strong> (les lignes rattachées à une promo comptent toujours). </span>}
               {(moisDebut || moisFin) ? <span style={{ color: '#ea580c' }}>⚠ Le budget affiché reste l’enveloppe complète : le « reste » est donc optimiste sur une période partielle.</span> : null}
             </div>
           )}
@@ -450,16 +471,26 @@ const PageBudget = ({ data }) => {
       {onglet === 'promo' && (
         <div className="card">
           <div className="card-title">Par promo</div>
-          <div className="help" style={{ marginBottom: 10 }}>Clique sur une promo pour voir son détail mensuel. Les enveloppes non reliées à une promo apparaissent en « Non affecté ».</div>
+          <div className="help" style={{ marginBottom: 10 }}>
+            Clique sur une promo pour voir son détail mensuel. « Planning dès » = date à partir de laquelle
+            le prévisionnel s’appuie sur le planning de l’app ; avant cette date, l’engagement provient des
+            lignes de facturation reprises (Ypareo). Laisser vide = tout le planning compte.
+          </div>
           <table className="table" style={{ fontSize: 13 }}>
             <thead><tr>
-              <th style={{ textAlign: 'left' }}>Promo</th><th>Budget</th><th>Facturé</th><th>Prévu</th><th>Engagé</th><th>Reste</th><th>%</th>
+              <th style={{ textAlign: 'left' }}>Promo</th><th>Planning dès</th><th>Budget</th><th>Facturé</th><th>Prévu</th><th>Engagé</th><th>Reste</th><th>%</th>
             </tr></thead>
             <tbody>
               {moteur.parPromo.map(r => (
                 <tr key={r.promo_id} style={{ background: (r.pct != null && r.pct >= seuil) ? '#fff6f6' : 'transparent', cursor: 'pointer' }}
                   onClick={() => { setPromoFocus(r.promo_id); setOnglet('mois'); }}>
                   <td style={{ textAlign: 'left', fontWeight: 600 }}>{r.label}</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    {r.promo_id !== SANS_PROMO ? (
+                      <input type="date" value={reprises[r.promo_id] || ''} style={{ fontSize: 11, padding: '2px 4px', width: 128 }}
+                        onChange={e => majReprise(r.promo_id, e.target.value)} />
+                    ) : '—'}
+                  </td>
                   <td>{r.budget ? _eur0(r.budget) : '—'}</td>
                   <td>{_eur0(r.facture)}</td>
                   <td style={{ color: '#2563eb' }}>{_eur0(r.prev)}</td>
@@ -470,6 +501,7 @@ const PageBudget = ({ data }) => {
               ))}
               <tr style={{ borderTop: '2px solid var(--border)', fontWeight: 700 }}>
                 <td style={{ textAlign: 'left' }}>Total</td>
+                <td></td>
                 <td>{_eur0(budgetTotal)}</td><td>{_eur0(facture)}</td><td>{_eur0(previsionnel)}</td>
                 <td>{_eur0(engage)}</td><td style={{ color: reste < 0 ? 'var(--danger)' : 'inherit' }}>{_eur0(reste)}</td><td>{pct}%</td>
               </tr>

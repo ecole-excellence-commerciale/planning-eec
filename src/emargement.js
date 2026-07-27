@@ -93,6 +93,12 @@ const EmargementSeance = ({ token, seanceId, onRetour }) => {
     catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
     finally { setBusy(false); }
   };
+  const rouvrir = async () => {
+    setBusy(true);
+    try { setEtat(await db.emargementRouvrir(token, seanceId)); toast('Émargement rouvert', 'success'); }
+    catch (e) { console.error(e); toast(e.message || 'Erreur', 'error'); }
+    finally { setBusy(false); }
+  };
 
   if (!etat) return <div className="text-muted" style={{ padding: 20 }}>Chargement…</div>;
   const s = etat.seance;
@@ -127,7 +133,12 @@ const EmargementSeance = ({ token, seanceId, onRetour }) => {
         <div className="flex-between" style={{ marginBottom: 10 }}>
           <div style={{ fontWeight: 600 }}>Feuille de présence</div>
           {ouverte && <button className="btn btn-primary btn-sm" disabled={busy} onClick={cloturer}>Clôturer</button>}
-          {!ouverte && <span className="badge" style={{ background: '#dcfce7', color: '#16a34a' }}>Clôturée</span>}
+          {!ouverte && (
+            <div className="flex gap-8" style={{ alignItems: 'center' }}>
+              <span className="badge" style={{ background: '#dcfce7', color: '#16a34a' }}>Clôturée</span>
+              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={rouvrir}>Rouvrir</button>
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {etat.lignes.map(l => {
@@ -210,7 +221,7 @@ const EmargementFormateur = ({ token }) => {
               <div style={{ textAlign: 'right' }}>
                 {s.seance_id
                   ? <button className="btn btn-secondary btn-sm" onClick={() => setSeanceId(s.seance_id)}>
-                      {s.statut === 'cloturee' ? 'Voir' : 'Reprendre'} ({s.nb_signes}/{s.nb_etudiants})
+                      {s.statut === 'cloturee' ? 'Ajuster' : 'Reprendre'} ({s.nb_signes}/{s.nb_etudiants})
                     </button>
                   : <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => ouvrir(s.planning_id)}>Faire l’appel</button>}
               </div>

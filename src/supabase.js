@@ -1169,6 +1169,11 @@ window.db = {
     if (error) throw error;
     return data;
   },
+  async emargementRouvrir(token, seanceId) {
+    const { data, error } = await _client.rpc('emargement_rouvrir', { p_token: token, p_seance_id: seanceId });
+    if (error) throw error;
+    return data;
+  },
   // ---- Émargement : côté étudiant (clé QR puis ticket) ----
   async emargementPublicOuvrir(seanceId, cle) {
     const { data, error } = await _client.rpc('emargement_public_ouvrir', { p_seance_id: seanceId, p_cle: cle });

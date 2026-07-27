@@ -1830,6 +1830,8 @@ const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
   const [corps, setCorps] = useState(EMAIL_CAMPAGNE_DEFAUT.corps);
   const [busy, setBusy] = useState(false);
   const [resultat, setResultat] = useState(null);
+  const [selection, setSelection] = useState(null); // Set d'ids ; null = pas encore initialisé
+  const [rech, setRech] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -1844,6 +1846,23 @@ const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
   const destinataires = intervenants.filter(i => i.email && i.token && i.token_actif !== false);
   const sansEmail = intervenants.filter(i => i.actif !== false && !i.email);
 
+  // Au premier rendu : tout le monde est coché par défaut.
+  useEffect(() => {
+    if (selection === null) setSelection(new Set(destinataires.map(i => i.id)));
+  }, [intervenants]);
+
+  const sel = selection || new Set();
+  const nbSel = destinataires.filter(i => sel.has(i.id)).length;
+  const toggleUn = (id) => setSelection(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toutCocher = () => setSelection(new Set(destinataires.map(i => i.id)));
+  const toutDecocher = () => setSelection(new Set());
+
+  const destinatairesVisibles = destinataires.filter(i => {
+    if (!rech.trim()) return true;
+    const q = rech.toLowerCase();
+    return `${i.prenom} ${i.nom} ${i.email || ''}`.toLowerCase().includes(q);
+  });
+
   const apercu = () => {
     const ex = destinataires[0];
     const vars = {
@@ -1857,12 +1876,13 @@ const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
   };
 
   const envoyer = async () => {
-    if (destinataires.length === 0) { toast('Aucun destinataire avec email + lien actif', 'error'); return; }
-    if (!confirm(`Envoyer le mail à ${destinataires.length} intervenant(s) ?`)) return;
+    const ids = destinataires.filter(i => sel.has(i.id)).map(i => i.id);
+    if (ids.length === 0) { toast('Sélectionne au moins un intervenant', 'error'); return; }
+    if (!confirm(`Envoyer le mail à ${ids.length} intervenant(s) ?`)) return;
     setBusy(true);
     try {
       const base = window.location.origin + window.location.pathname.replace(/index\.html$/, '');
-      const out = await db.notifierCampagne(campagne.id, sujet, corps, base);
+      const out = await db.notifierCampagne(campagne.id, sujet, corps, base, ids);
       // Mémoriser le modèle pour la prochaine fois
       db.setParametre('email_campagne_sujet', sujet).catch(() => {});
       db.setParametre('email_campagne_corps', corps).catch(() => {});
@@ -1901,8 +1921,29 @@ const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
         ) : (
           <div>
             <div className="text-sm" style={{ background: 'var(--bg-alt)', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
-              <strong>{destinataires.length}</strong> destinataire(s) recevront un mail personnalisé avec leur lien unique.
-              {sansEmail.length > 0 && <span style={{ color: '#ea580c' }}> · {sansEmail.length} intervenant(s) sans email seront ignorés.</span>}
+              <strong>{nbSel}</strong> destinataire(s) sélectionné(s) sur {destinataires.length}. Chacun recevra un mail personnalisé avec son lien unique.
+              {sansEmail.length > 0 && <span style={{ color: '#ea580c' }}> · {sansEmail.length} intervenant(s) sans email (non listés).</span>}
+            </div>
+
+            <div className="field">
+              <div className="flex-between" style={{ marginBottom: 6 }}>
+                <div className="label" style={{ margin: 0 }}>Destinataires</div>
+                <div className="flex gap-8">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={toutCocher}>Tout cocher</button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={toutDecocher}>Tout décocher</button>
+                </div>
+              </div>
+              <input placeholder="Rechercher un intervenant…" value={rech} onChange={e => setRech(e.target.value)} style={{ marginBottom: 8 }} />
+              <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+                {destinatairesVisibles.length === 0 && <div className="text-muted text-sm" style={{ padding: 12 }}>Aucun intervenant.</div>}
+                {destinatairesVisibles.map(i => (
+                  <label key={i.id} className="flex gap-8" style={{ alignItems: 'center', padding: '7px 10px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={sel.has(i.id)} onChange={() => toggleUn(i.id)} />
+                    <span style={{ flex: 1 }}>{i.prenom} {i.nom}</span>
+                    <span className="text-muted text-sm">{i.email}</span>
+                  </label>
+                ))}
+              </div>
             </div>
 
             <div className="field"><div className="label">Objet</div>
@@ -1923,8 +1964,8 @@ const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
 
             <div className="modal-foot">
               <button className="btn btn-ghost" onClick={onClose}>Annuler</button>
-              <button className="btn btn-primary" disabled={busy} onClick={envoyer}>
-                {busy ? 'Envoi en cours…' : `Envoyer à ${destinataires.length} intervenant(s)`}
+              <button className="btn btn-primary" disabled={busy || nbSel === 0} onClick={envoyer}>
+                {busy ? 'Envoi en cours…' : `Envoyer à ${nbSel} intervenant(s)`}
               </button>
             </div>
           </div>

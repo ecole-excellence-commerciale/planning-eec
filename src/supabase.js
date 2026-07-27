@@ -1289,7 +1289,7 @@ window.db = {
   },
 
   // Prévenir les intervenants de l'ouverture d'une campagne (mail personnalisé via Edge Function)
-  async notifierCampagne(campagneId, sujet, corps, base) {
+  async notifierCampagne(campagneId, sujet, corps, base, intervenantIds) {
     const session = await this.getSession();
     if (!session) throw new Error('Session admin expirée — reconnecte-toi.');
     const key = window.EEC_CONFIG.SUPABASE_ANON_KEY;
@@ -1300,7 +1300,7 @@ window.db = {
         apikey: key,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ campagne_id: campagneId, sujet, corps, base }),
+      body: JSON.stringify({ campagne_id: campagneId, sujet, corps, base, intervenant_ids: intervenantIds || null }),
     });
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || 'Erreur serveur');

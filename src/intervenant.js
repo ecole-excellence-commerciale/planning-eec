@@ -151,6 +151,7 @@ const PageIntervenant = ({ token }) => {
   const [comments, setComments] = useState({});   // { isoWeek: "texte" }
   const [saving, setSaving] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
+  const [vue, setVue] = useState('dispos'); // 'dispos' | 'emargement'
 
   useEffect(() => {
     (async () => {
@@ -255,6 +256,27 @@ const PageIntervenant = ({ token }) => {
       <div className="public-main">
         <div className="public-hero">
           <h1 className="display-dot">Bonjour {intervenant.prenom}</h1>
+
+          <div className="flex gap-8" style={{ margin: '14px 0 4px', flexWrap: 'wrap' }}>
+            <button className="quick-btn" onClick={() => setVue('dispos')}
+              style={vue === 'dispos' ? { background: 'var(--navy)', color: '#fff' } : {}}>Mes disponibilités</button>
+            <button className="quick-btn" onClick={() => setVue('emargement')}
+              style={vue === 'emargement' ? { background: 'var(--navy)', color: '#fff' } : {}}>Faire l’appel</button>
+          </div>
+        </div>
+
+        {vue === 'emargement' && (
+          <div className="week-card" style={{ marginTop: 8, padding: 16 }}>
+            <h2 style={{ marginBottom: 4 }}>Émargement</h2>
+            <p className="text-muted text-sm" style={{ marginBottom: 12 }}>
+              Sélectionne un cours, ouvre l’appel, et affiche le QR code aux étudiants pour qu’ils signent.
+            </p>
+            <EmargementFormateur token={token} />
+          </div>
+        )}
+
+        <div style={{ display: vue === 'dispos' ? 'block' : 'none' }}>
+        <div className="public-hero" style={{ paddingTop: 0 }}>
           <p className="lead">
             Bienvenue sur ta page de disponibilités pour la rentrée. Indique les <strong>demi-journées où tu seras disponible</strong> pour
             intervenir entre le <strong>{new Date(campagne.date_debut + 'T00:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</strong> et
@@ -324,6 +346,8 @@ const PageIntervenant = ({ token }) => {
         </div>
 
         {/* Mes documents (CV, diplômes, NDA) */}
+        </div>{/* fin vue dispos */}
+
         <div className="week-card" style={{ marginTop: 24 }}>
           <div className="week-card-head">
             <div className="week-card-title">

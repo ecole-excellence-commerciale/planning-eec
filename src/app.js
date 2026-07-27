@@ -60,6 +60,8 @@ const AdminApp = () => {
 const Root = () => {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('i');
+  const emargeSeance = params.get('emargement');
+  const emargeCle = params.get('k');
 
   const [session, setSession] = useState(undefined); // undefined = en cours de vérif
 
@@ -69,6 +71,11 @@ const Root = () => {
     const { data: sub } = db.onAuthChange(s => setSession(s));
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
+
+  // 0) Lien QR d'émargement → page publique de signature étudiant
+  if (emargeSeance) {
+    return <EmargementEtudiant seanceId={emargeSeance} cle={emargeCle} />;
+  }
 
   // 1) Lien intervenant → page publique
   if (token) {

@@ -1143,6 +1143,44 @@ window.db = {
     if (error) throw error;
   },
 
+  // ---- Émargement : côté formateur (token) ----
+  async emargementMesSeances(token) {
+    const { data, error } = await _client.rpc('emargement_mes_seances', { p_token: token });
+    if (error) throw error;
+    return data || [];
+  },
+  async emargementEtat(token, seanceId) {
+    const { data, error } = await _client.rpc('emargement_etat', { p_token: token, p_seance_id: seanceId });
+    if (error) throw error;
+    return data;
+  },
+  async emargementOuvrir(token, planningId, force = false) {
+    const { data, error } = await _client.rpc('emargement_ouvrir', { p_token: token, p_planning_id: planningId, p_force: force });
+    if (error) throw error;
+    return data;
+  },
+  async emargementMarquer(token, seanceId, etudiantId, statut) {
+    const { data, error } = await _client.rpc('emargement_marquer', { p_token: token, p_seance_id: seanceId, p_etudiant_id: etudiantId, p_statut: statut });
+    if (error) throw error;
+    return data;
+  },
+  async emargementCloturer(token, seanceId) {
+    const { data, error } = await _client.rpc('emargement_cloturer', { p_token: token, p_seance_id: seanceId });
+    if (error) throw error;
+    return data;
+  },
+  // ---- Émargement : côté étudiant (clé QR puis ticket) ----
+  async emargementPublicOuvrir(seanceId, cle) {
+    const { data, error } = await _client.rpc('emargement_public_ouvrir', { p_seance_id: seanceId, p_cle: cle });
+    if (error) throw error;
+    return data;
+  },
+  async emargementPublicSigner(ticket, etudiantId, signature) {
+    const { data, error } = await _client.rpc('emargement_public_signer', { p_ticket: ticket, p_etudiant_id: etudiantId, p_signature: signature });
+    if (error) throw error;
+    return data;
+  },
+
   async sauverCommentaireParToken(token, campagneId, semaine, commentaire) {
     const { error } = await _client.rpc('sauver_commentaire_par_token', {
       p_token: token, p_campagne: campagneId, p_semaine: semaine, p_commentaire: commentaire

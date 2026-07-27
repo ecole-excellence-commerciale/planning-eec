@@ -1287,4 +1287,23 @@ window.db = {
   async docsDeleteParToken(token, docId) {
     await this._docsEdgeCall({ action: 'delete', token, doc_id: docId });
   },
+
+  // Prévenir les intervenants de l'ouverture d'une campagne (mail personnalisé via Edge Function)
+  async notifierCampagne(campagneId, sujet, corps, base) {
+    const session = await this.getSession();
+    if (!session) throw new Error('Session admin expirée — reconnecte-toi.');
+    const key = window.EEC_CONFIG.SUPABASE_ANON_KEY;
+    const res = await fetch(window.EEC_CONFIG.SUPABASE_URL + '/functions/v1/notifier-campagne', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: key,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ campagne_id: campagneId, sujet, corps, base }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || 'Erreur serveur');
+    return out;
+  },
 };

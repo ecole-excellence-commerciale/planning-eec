@@ -1809,10 +1809,136 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
 };
 
 // ---- CAMPAGNES ----
+const EMAIL_CAMPAGNE_DEFAUT = {
+  sujet: 'EEC — Renseigne tes disponibilités ({campagne})',
+  corps: `Bonjour {prenom},
+
+La collecte des disponibilités « {campagne} » est ouverte, du {date_debut} au {date_fin}.
+
+Merci d'indiquer les demi-journées où tu seras disponible pour intervenir, via ton espace personnel :
+{lien}
+
+Tu peux revenir modifier tes choix à tout moment via ce même lien.
+
+Belle journée,
+L'équipe EEC`,
+};
+
+const ModalPrevenirIntervenants = ({ campagne, intervenants, onClose }) => {
+  const toast = useToast();
+  const [sujet, setSujet] = useState(EMAIL_CAMPAGNE_DEFAUT.sujet);
+  const [corps, setCorps] = useState(EMAIL_CAMPAGNE_DEFAUT.corps);
+  const [busy, setBusy] = useState(false);
+  const [resultat, setResultat] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [s, c] = await Promise.all([db.getParametre('email_campagne_sujet'), db.getParametre('email_campagne_corps')]);
+        if (s) setSujet(s);
+        if (c) setCorps(c);
+      } catch (e) { /* défauts */ }
+    })();
+  }, []);
+
+  const destinataires = intervenants.filter(i => i.email && i.token && i.token_actif !== false);
+  const sansEmail = intervenants.filter(i => i.actif !== false && !i.email);
+
+  const apercu = () => {
+    const ex = destinataires[0];
+    const vars = {
+      prenom: ex?.prenom || 'Prénom', nom: ex?.nom || 'Nom', campagne: campagne.nom,
+      date_debut: campagne.date_debut ? new Date(campagne.date_debut + 'T00:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '',
+      date_fin: campagne.date_fin ? new Date(campagne.date_fin + 'T00:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '',
+      lien: 'https://…/?i=lien-unique',
+    };
+    const rep = (t) => t.replace(/\{(\w+)\}/g, (_m, k) => (k in vars ? vars[k] : `{${k}}`));
+    return { sujet: rep(sujet), corps: rep(corps) };
+  };
+
+  const envoyer = async () => {
+    if (destinataires.length === 0) { toast('Aucun destinataire avec email + lien actif', 'error'); return; }
+    if (!confirm(`Envoyer le mail à ${destinataires.length} intervenant(s) ?`)) return;
+    setBusy(true);
+    try {
+      const base = window.location.origin + window.location.pathname.replace(/index\.html$/, '');
+      const out = await db.notifierCampagne(campagne.id, sujet, corps, base);
+      // Mémoriser le modèle pour la prochaine fois
+      db.setParametre('email_campagne_sujet', sujet).catch(() => {});
+      db.setParametre('email_campagne_corps', corps).catch(() => {});
+      setResultat(out);
+      if (out.echecs > 0) toast(`${out.envoyes} envoyé(s), ${out.echecs} échec(s)`, 'error');
+      else toast(`${out.envoyes} mail(s) envoyé(s)`, 'success');
+    } catch (e) { console.error(e); toast(e.message || 'Erreur d’envoi', 'error'); }
+    finally { setBusy(false); }
+  };
+
+  const p = apercu();
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <div className="modal-head">
+          <h3>✉ Prévenir les intervenants — {campagne.nom}</h3>
+          <div className="modal-close" onClick={onClose}><Icon name="x" size={16} /></div>
+        </div>
+
+        {resultat ? (
+          <div>
+            <div className="card" style={{ textAlign: 'center', background: resultat.echecs ? '#fffaf5' : '#f0fdf4' }}>
+              <div style={{ fontSize: 34 }}>{resultat.echecs ? '⚠️' : '✅'}</div>
+              <div style={{ fontWeight: 700, fontSize: 18, margin: '6px 0' }}>{resultat.envoyes} mail(s) envoyé(s)</div>
+              {resultat.echecs > 0 && <div className="text-sm" style={{ color: 'var(--danger)' }}>{resultat.echecs} échec(s)</div>}
+            </div>
+            {resultat.erreurs && resultat.erreurs.length > 0 && (
+              <div className="card">
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Échecs</div>
+                {resultat.erreurs.map((e, k) => <div key={k} className="text-sm text-muted">{e.email} — {e.erreur}</div>)}
+              </div>
+            )}
+            <div className="modal-foot"><button className="btn btn-primary" onClick={onClose}>Fermer</button></div>
+          </div>
+        ) : (
+          <div>
+            <div className="text-sm" style={{ background: 'var(--bg-alt)', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+              <strong>{destinataires.length}</strong> destinataire(s) recevront un mail personnalisé avec leur lien unique.
+              {sansEmail.length > 0 && <span style={{ color: '#ea580c' }}> · {sansEmail.length} intervenant(s) sans email seront ignorés.</span>}
+            </div>
+
+            <div className="field"><div className="label">Objet</div>
+              <input value={sujet} onChange={e => setSujet(e.target.value)} />
+            </div>
+            <div className="field"><div className="label">Message</div>
+              <textarea rows={9} value={corps} onChange={e => setCorps(e.target.value)} style={{ fontFamily: 'inherit', lineHeight: 1.5 }} />
+            </div>
+            <div className="help" style={{ marginBottom: 10 }}>
+              Variables : <code>{'{prenom}'}</code> <code>{'{nom}'}</code> <code>{'{campagne}'}</code> <code>{'{date_debut}'}</code> <code>{'{date_fin}'}</code> <code>{'{lien}'}</code> (le lien unique de chaque intervenant, transformé en bouton).
+            </div>
+
+            <div className="card" style={{ background: '#fff', border: '1px solid var(--border)' }}>
+              <div className="text-muted text-sm" style={{ marginBottom: 4 }}>Aperçu (1er destinataire)</div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>{p.sujet}</div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: '#334155' }}>{p.corps}</div>
+            </div>
+
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={onClose}>Annuler</button>
+              <button className="btn btn-primary" disabled={busy} onClick={envoyer}>
+                {busy ? 'Envoi en cours…' : `Envoyer à ${destinataires.length} intervenant(s)`}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const PageCampagnes = ({ data, onReload }) => {
   const toast = useToast();
-  const { campagnes } = data;
+  const { campagnes, intervenants = [] } = data;
   const [showAdd, setShowAdd] = useState(false);
+  const [prevenir, setPrevenir] = useState(null); // campagne ciblée
   const [form, setForm] = useState({ nom: '', date_debut: '', date_fin: '' });
 
   const submit = async () => {
@@ -1847,9 +1973,16 @@ const PageCampagnes = ({ data, onReload }) => {
                 {new Date(c.date_debut + 'T00:00:00').toLocaleDateString('fr-FR')} → {new Date(c.date_fin + 'T00:00:00').toLocaleDateString('fr-FR')}
               </div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => toggleStatut(c)}>
-              {c.statut === 'ouverte' ? 'Fermer' : 'Rouvrir'}
-            </button>
+            <div className="flex gap-8">
+              {c.statut === 'ouverte' && (
+                <button className="btn btn-secondary btn-sm" onClick={() => setPrevenir(c)}>
+                  <Icon name="download" size={12} /> Prévenir les intervenants
+                </button>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={() => toggleStatut(c)}>
+                {c.statut === 'ouverte' ? 'Fermer' : 'Rouvrir'}
+              </button>
+            </div>
           </div>
         </div>
       ))}
@@ -1869,6 +2002,9 @@ const PageCampagnes = ({ data, onReload }) => {
             </div>
           </div>
         </div>
+      )}
+      {prevenir && (
+        <ModalPrevenirIntervenants campagne={prevenir} intervenants={intervenants} onClose={() => setPrevenir(null)} />
       )}
     </div>
   );

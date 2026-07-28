@@ -167,8 +167,29 @@ const PageDashboard = ({ data, onNav }) => {
 // ---- VUE CALENDRIER (heatmap + hover/clic) ----
 const PageCalendrier = ({ data }) => {
   const { intervenants, campagne, dispos, niveaux } = data;
+  const campagnes = data.campagnes || [];
   const [filterNiveau, setFilterNiveau] = useState('all');
   const [detail, setDetail] = useState(null); // { date, periode, liste:[] }
+  // Campagne affichée : par défaut celle chargée globalement (l'ouverte), mais on peut
+  // en choisir une autre (dispos rechargées à la demande).
+  const [campSelId, setCampSelId] = useState(campagne?.id || (campagnes[0] && campagnes[0].id) || null);
+  const [disposLocal, setDisposLocal] = useState(dispos || []);
+  const [chargementDispos, setChargementDispos] = useState(false);
+  const campSel = campagnes.find(c => c.id === campSelId) || campagne || null;
+
+  // Recharge les dispos quand on change de campagne (réutilise data.dispos pour l'ouverte)
+  useEffect(() => {
+    let annule = false;
+    if (!campSelId) { setDisposLocal([]); return; }
+    if (campagne && campSelId === campagne.id) { setDisposLocal(dispos || []); return; }
+    setChargementDispos(true);
+    db.getDisposCampagne(campSelId)
+      .then(d => { if (!annule) setDisposLocal(d || []); })
+      .catch(e => { console.error(e); if (!annule) setDisposLocal([]); })
+      .finally(() => { if (!annule) setChargementDispos(false); });
+    return () => { annule = true; };
+  }, [campSelId, dispos]);
+
   // Filtre intervenants : Set des IDs sélectionnés. Par défaut tous cochés.
   const [selectedIntervenants, setSelectedIntervenants] = useState(() => new Set(intervenants.map(i => i.id)));
   const [showFilterModal, setShowFilterModal] = useState(false);
@@ -183,18 +204,18 @@ const PageCalendrier = ({ data }) => {
     });
   }, [intervenants]);
 
-  if (!campagne) {
-    return <div className="page-content"><div className="card text-muted">Aucune campagne ouverte.</div></div>;
+  if (!campSel) {
+    return <div className="page-content"><div className="card text-muted">Aucune campagne enregistrée.</div></div>;
   }
 
-  const weeks = useMemo(() => generateWeeks(campagne.date_debut, campagne.date_fin), [campagne]);
+  const weeks = useMemo(() => generateWeeks(campSel.date_debut, campSel.date_fin), [campSel]);
 
   // Index : pour une date+periode, qui est dispo ?
   // On filtre par niveau ET par intervenant sélectionné
   const dispoIndex = useMemo(() => {
     const idx = {};
     const interById = Object.fromEntries(intervenants.map(i => [i.id, i]));
-    dispos.forEach(d => {
+    disposLocal.forEach(d => {
       const inter = interById[d.intervenant_id];
       if (!inter) return;
       if (filterNiveau !== 'all' && !inter.niveaux.includes(filterNiveau)) return;
@@ -203,7 +224,7 @@ const PageCalendrier = ({ data }) => {
       (idx[key] = idx[key] || []).push(inter);
     });
     return idx;
-  }, [dispos, intervenants, filterNiveau, selectedIntervenants]);
+  }, [disposLocal, intervenants, filterNiveau, selectedIntervenants]);
 
   const countFor = (dateStr, periode) => (dispoIndex[`${dateStr}-${periode}`] || []).length;
 
@@ -227,11 +248,25 @@ const PageCalendrier = ({ data }) => {
         <div>
           <div className="breadcrumb">PILOTAGE</div>
           <h1 className="page-title display-dot">Vue calendrier</h1>
-          <div className="page-subtitle">Intervenants disponibles par demi-journée — {campagne.nom}</div>
+          <div className="page-subtitle">
+            Intervenants disponibles par demi-journée — {campSel.nom}
+            {campSel.statut !== 'ouverte' && <span className="badge" style={{ marginLeft: 8, background: '#f1f5f9', color: '#64748b' }}>fermée</span>}
+            {chargementDispos && <span className="text-muted" style={{ marginLeft: 8, fontSize: 12 }}>· chargement…</span>}
+          </div>
         </div>
       </div>
 
       <div className="filters-bar">
+        <div>
+          <label className="label" style={{ marginBottom: 4, fontSize: 10 }}>Campagne</label>
+          <select value={campSelId || ''} onChange={e => setCampSelId(e.target.value)}>
+            {campagnes.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.nom}{c.statut === 'ouverte' ? ' • ouverte' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
         <div>
           <label className="label" style={{ marginBottom: 4, fontSize: 10 }}>Niveau</label>
           <select value={filterNiveau} onChange={e => setFilterNiveau(e.target.value)}>

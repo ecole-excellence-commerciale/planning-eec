@@ -1061,6 +1061,9 @@ const ModalAjoutIntervenant = ({ niveaux, onClose, onAdded }) => {
 const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
   const toast = useToast();
   const { niveaux, categories, sousCategories = [], campagne, promos = [], modules = [] } = data;
+  const campagnes = data.campagnes || [];
+  const [ficheCampId, setFicheCampId] = useState(campagne?.id || (campagnes[0] && campagnes[0].id) || null);
+  const [chargementDispos, setChargementDispos] = useState(false);
   const [inter, setInter] = useState(null);
   const [tab, setTab] = useState('dispos');
   const [tauxEdit, setTauxEdit] = useState('');
@@ -1090,10 +1093,22 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
       email: i.email || '', telephone: i.telephone || '', ville: i.ville || ''
     });
     if (campagne) setDisposPerso(await db.getDisposIntervenant(intervenantId, campagne.id));
+    // (les dispos sont aussi rechargées par l'effet dédié quand on change de campagne)
     // Charger les interventions planifiées (toutes promos)
     setAssignations(await db.getAllAssignationsIntervenant(intervenantId));
   };
   useEffect(() => { load(); }, [intervenantId]);
+  // Recharge les dispos de l'intervenant pour la campagne sélectionnée
+  useEffect(() => {
+    let annule = false;
+    if (!ficheCampId) { setDisposPerso([]); return; }
+    setChargementDispos(true);
+    db.getDisposIntervenant(intervenantId, ficheCampId)
+      .then(d => { if (!annule) setDisposPerso(d || []); })
+      .catch(e => { console.error(e); if (!annule) setDisposPerso([]); })
+      .finally(() => { if (!annule) setChargementDispos(false); });
+    return () => { annule = true; };
+  }, [intervenantId, ficheCampId]);
   // Repartir d'une période vierge quand on ouvre une autre fiche
   useEffect(() => { setPeriodeFiltre({ debut: '', fin: '' }); }, [intervenantId]);
 
@@ -1234,8 +1249,15 @@ const PageFicheIntervenant = ({ intervenantId, data, onBack, onReload }) => {
 
           {tab === 'dispos' && (
             <div className="card">
-              <div className="card-title">Disponibilités {campagne ? campagne.nom : ''}</div>
-              {inter.statut === 'pas_repondu' ? (
+              <div className="flex-between" style={{ marginBottom: 8 }}>
+                <div className="card-title" style={{ margin: 0 }}>Disponibilités</div>
+                <select value={ficheCampId || ''} onChange={e => setFicheCampId(e.target.value)} style={{ maxWidth: 260 }}>
+                  {campagnes.map(c => <option key={c.id} value={c.id}>{c.nom}{c.statut === 'ouverte' ? ' • ouverte' : ''}</option>)}
+                </select>
+              </div>
+              {chargementDispos ? (
+                <div className="text-muted text-sm" style={{ padding: '20px 0', textAlign: 'center' }}>Chargement…</div>
+              ) : (inter.statut === 'pas_repondu' && disposPerso.length === 0) ? (
                 <div className="text-muted text-sm" style={{ padding: '20px 0', textAlign: 'center' }}>
                   {inter.prenom} n’a pas encore renseigné ses disponibilités.<br />Envoie-lui son lien personnel (onglet « Profil »).
                 </div>
